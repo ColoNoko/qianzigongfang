@@ -26,7 +26,7 @@ const APP_NAME = '汉化工坊'
  * ⚠️ 这里**不许**再写版本号字面量 —— 以前写死在这儿，改版本时最容易漏的就是它。
  */
 const APP_VERSION = __APP_VERSION__
-const APP_DESCRIPTION = '汉化工坊 — Electron + Vue3 + TS 嵌字/管理应用'
+const APP_DESCRIPTION = '嵌字 / 翻译 / 校对 / 监修 —— 一条线走完'
 
 const thumbSizes: readonly ThumbSize[] = ['大', '中', '小'] as const
 const childSortOrders: ReadonlyArray<{ value: ChildSortOrder; label: string }> = [
@@ -627,119 +627,9 @@ async function importLegacyJson(): Promise<void> {
         </div>
       </div>
 
-      <!-- 分组二：数据与工具 -->
+      <!-- 分组二：外部工具（工作流核心，配错「去X」就废，提到最前） -->
       <div class="flex flex-col gap-3">
-        <h2 class="settings-group">数据与工具</h2>
-
-        <!-- 数据安全 -->
-        <section
-          data-testid="settings-data-safety-section"
-          class="rounded-lg border border-border bg-card-bg p-5 shadow-[var(--shadow-1)]"
-        >
-          <h3
-            class="settings-title"
-            title="备份是一致性快照（含未合并的写入），放在 data/backups/，只保留最近 20 份。"
-          >
-            数据安全
-          </h3>
-          <p class="settings-desc">标记是手工活，丢了没法重做。这里给三样兜底。</p>
-          <div class="flex flex-wrap items-center gap-2">
-            <button
-              type="button"
-              class="h-8 rounded-badge bg-accent px-3 text-[13px] font-medium text-text-on-accent transition-colors hover:bg-primary-hover active:bg-primary-active disabled:cursor-not-allowed disabled:opacity-40"
-              :disabled="backingUp"
-              data-testid="db-backup-now"
-              @click="onBackupNow"
-            >
-              {{ backingUp ? '备份中…' : '立即备份' }}
-            </button>
-            <button
-              type="button"
-              class="h-8 rounded-badge border border-border bg-card-bg px-3 text-[13px] text-text-secondary transition-colors hover:bg-card-bg-hover hover:text-text-primary"
-              data-testid="mark-history-open"
-              @click="markHistoryVisible = true"
-            >
-              标记记录
-            </button>
-            <button
-              type="button"
-              class="h-8 rounded-badge border border-border bg-card-bg px-3 text-[13px] text-text-secondary transition-colors hover:bg-card-bg-hover hover:text-text-primary"
-              data-testid="db-backup-reveal"
-              @click="onRevealBackups"
-            >
-              打开备份文件夹
-            </button>
-            <button
-              type="button"
-              class="h-8 rounded-badge border border-border bg-card-bg px-3 text-[13px] text-text-secondary transition-colors hover:bg-card-bg-hover hover:text-text-primary"
-              data-testid="diagnostics-open"
-              @click="diagnosticsVisible = true"
-            >
-              诊断
-            </button>
-            <label
-              class="flex cursor-pointer items-center gap-2 rounded-badge px-2 py-1 text-[13px] text-text-secondary transition-colors hover:bg-card-bg-hover"
-            >
-              <input
-                type="checkbox"
-                :checked="autoBackup"
-                data-testid="auto-backup-toggle"
-                class="accent-[var(--accent)]"
-                @change="onAutoBackupChange"
-              />
-              启动时自动备份（每 12 小时最多一份）
-            </label>
-          </div>
-          <p
-            v-if="backupMessage"
-            class="mt-2 text-xs text-text-secondary"
-            data-testid="db-backup-message"
-          >
-            {{ backupMessage }}
-          </p>
-          <DbBackupList :items="visibleBackups" @restore="openRestore" />
-          <div v-if="backups.length > CARD_BACKUP_PREVIEW" class="mt-2 flex justify-end">
-            <button
-              type="button"
-              class="rounded-badge px-1 text-[12px] text-text-secondary transition-colors hover:text-accent"
-              data-testid="db-backup-open-all"
-              @click="backupManagerVisible = true"
-            >
-              全部 {{ backups.length }} 条 ›
-            </button>
-          </div>
-        </section>
-
-        <!-- 父级自检 -->
-        <section
-          data-testid="settings-self-check-section"
-          class="rounded-lg border border-border bg-card-bg p-5 shadow-[var(--shadow-1)]"
-        >
-          <h3 class="settings-title">父级自检</h3>
-          <p class="settings-desc">
-            开启后，点击父级行的“刷新并检测新章节”时将跳过确认弹窗直接导入未冲突的新章节；同集数冲突仍需要单独选择。
-          </p>
-          <label class="flex cursor-pointer items-center gap-3 text-sm text-text-primary">
-            <input
-              type="checkbox"
-              :checked="silentSelfCheck"
-              data-testid="silent-self-check-toggle"
-              class="sr-only"
-              @change="onSilentSelfCheckChange"
-            />
-            <span
-              class="flex h-5 w-9 items-center rounded-full border border-border transition-colors"
-              :class="silentSelfCheck ? 'bg-accent' : 'bg-border-strong'"
-              aria-hidden="true"
-            >
-              <span
-                class="h-4 w-4 transform rounded-full bg-text-on-accent shadow transition-transform"
-                :class="silentSelfCheck ? 'translate-x-4' : 'translate-x-0.5'"
-              />
-            </span>
-            <span>静默导入新增章节</span>
-          </label>
-        </section>
+        <h2 class="settings-group">外部工具</h2>
 
         <!-- 外部工具 -->
         <section
@@ -822,28 +712,153 @@ async function importLegacyJson(): Promise<void> {
             <span>嵌字缺少 PSD 且未配置译文导入工具时不再提示，直接打开 Photoshop</span>
           </label>
         </section>
+      </div>
 
-        <!-- 旧数据导入 -->
-        <section
-          data-testid="settings-import-section"
-          class="rounded-lg border border-border bg-card-bg p-5 shadow-[var(--shadow-1)]"
-        >
-          <div class="flex items-center justify-between gap-4">
-            <div>
-              <h3 class="settings-title">导入旧版数据</h3>
-              <p class="settings-desc">
-                支持汉化工坊 SQLite 数据库，以及 qianzi-gongfang.json、memory.json 和
-                font-manager.json；应用会自动识别并安全合并，不覆盖现有项目名称与集数。
-              </p>
-            </div>
+      <!-- 分组三：导入与自检 -->
+      <div class="flex flex-col gap-3">
+        <h2 class="settings-group">导入与自检</h2>
+        <div class="grid gap-3 sm:grid-cols-2" data-testid="settings-import-check-row">
+          <!-- 父级自检 -->
+          <section
+            data-testid="settings-self-check-section"
+            class="rounded-lg border border-border bg-card-bg p-5 shadow-[var(--shadow-1)]"
+          >
+            <h3
+              class="settings-title"
+              title="开启后，点击父级行的「刷新并检测新章节」时将跳过确认弹窗直接导入未冲突的新章节；同集数冲突仍需要单独选择。"
+            >
+              父级自检
+            </h3>
+            <label class="mt-3 flex cursor-pointer items-center gap-3 text-sm text-text-primary">
+              <input
+                type="checkbox"
+                :checked="silentSelfCheck"
+                data-testid="silent-self-check-toggle"
+                class="sr-only"
+                @change="onSilentSelfCheckChange"
+              />
+              <span
+                class="flex h-5 w-9 items-center rounded-full border border-border transition-colors"
+                :class="silentSelfCheck ? 'bg-accent' : 'bg-border-strong'"
+                aria-hidden="true"
+              >
+                <span
+                  class="h-4 w-4 transform rounded-full bg-text-on-accent shadow transition-transform"
+                  :class="silentSelfCheck ? 'translate-x-4' : 'translate-x-0.5'"
+                />
+              </span>
+              <span>静默导入新增章节</span>
+            </label>
+            <p class="settings-hint">刷新父级时跳过确认弹窗；同集数冲突仍需单独选</p>
+          </section>
+          <!-- 旧数据导入 -->
+          <section
+            data-testid="settings-import-section"
+            class="rounded-lg border border-border bg-card-bg p-5 shadow-[var(--shadow-1)]"
+          >
+            <h3
+              class="settings-title"
+              title="支持汉化工坊 SQLite 数据库（.sqlite / .sqlite3 / .db）与三类 JSON，可一次多选；应用会自动识别并安全合并，不覆盖现有项目名称与集数。"
+            >
+              导入旧版数据
+            </h3>
             <button
               type="button"
-              class="shrink-0 rounded-badge bg-accent px-4 py-2 text-sm font-medium text-text-on-accent transition-colors hover:bg-primary-hover active:bg-primary-active disabled:cursor-not-allowed disabled:opacity-40"
+              class="mt-3 rounded-badge bg-accent px-4 py-2 text-sm font-medium text-text-on-accent transition-colors hover:bg-primary-hover active:bg-primary-active disabled:cursor-not-allowed disabled:opacity-40"
               :disabled="importingLegacyData"
               data-testid="import-legacy-json"
               @click="importLegacyJson"
             >
               {{ importingLegacyData ? '导入中…' : '选择数据导入' }}
+            </button>
+            <p class="settings-hint">
+              旧数据在旧程序旁的 data 目录里：数据库 data\database\qianzi-gongfang.sqlite，更老的
+              JSON 在 data\config\ 下（memory.json、font-manager.json）。
+            </p>
+            <p class="settings-hint">自动识别并安全合并，不覆盖现有名称与集数</p>
+          </section>
+        </div>
+      </div>
+
+      <!-- 分组四：数据安全 -->
+      <div class="flex flex-col gap-3">
+        <h2 class="settings-group">数据安全</h2>
+
+        <!-- 数据安全 -->
+        <section
+          data-testid="settings-data-safety-section"
+          class="rounded-lg border border-border bg-card-bg p-5 shadow-[var(--shadow-1)]"
+        >
+          <h3
+            class="settings-title"
+            title="备份是一致性快照（含未合并的写入），放在 data/backups/，只保留最近 20 份。"
+          >
+            数据安全
+          </h3>
+          <p class="settings-desc">标记是手工活，丢了没法重做。这里给三样兜底。</p>
+          <div class="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              class="h-8 rounded-badge bg-accent px-3 text-[13px] font-medium text-text-on-accent transition-colors hover:bg-primary-hover active:bg-primary-active disabled:cursor-not-allowed disabled:opacity-40"
+              :disabled="backingUp"
+              data-testid="db-backup-now"
+              @click="onBackupNow"
+            >
+              {{ backingUp ? '备份中…' : '立即备份' }}
+            </button>
+            <button
+              type="button"
+              class="h-8 rounded-badge border border-border bg-card-bg px-3 text-[13px] text-text-secondary transition-colors hover:bg-card-bg-hover hover:text-text-primary"
+              data-testid="mark-history-open"
+              @click="markHistoryVisible = true"
+            >
+              标记记录
+            </button>
+            <button
+              type="button"
+              class="h-8 rounded-badge border border-border bg-card-bg px-3 text-[13px] text-text-secondary transition-colors hover:bg-card-bg-hover hover:text-text-primary"
+              data-testid="db-backup-reveal"
+              @click="onRevealBackups"
+            >
+              打开备份文件夹
+            </button>
+            <button
+              type="button"
+              class="h-8 rounded-badge border border-border bg-card-bg px-3 text-[13px] text-text-secondary transition-colors hover:bg-card-bg-hover hover:text-text-primary"
+              data-testid="diagnostics-open"
+              @click="diagnosticsVisible = true"
+            >
+              诊断
+            </button>
+            <label
+              class="flex cursor-pointer items-center gap-2 rounded-badge px-2 py-1 text-[13px] text-text-secondary transition-colors hover:bg-card-bg-hover"
+            >
+              <input
+                type="checkbox"
+                :checked="autoBackup"
+                data-testid="auto-backup-toggle"
+                class="accent-[var(--accent)]"
+                @change="onAutoBackupChange"
+              />
+              启动时自动备份（每 12 小时最多一份）
+            </label>
+          </div>
+          <p
+            v-if="backupMessage"
+            class="mt-2 text-xs text-text-secondary"
+            data-testid="db-backup-message"
+          >
+            {{ backupMessage }}
+          </p>
+          <DbBackupList :items="visibleBackups" @restore="openRestore" />
+          <div v-if="backups.length > CARD_BACKUP_PREVIEW" class="mt-2 flex justify-end">
+            <button
+              type="button"
+              class="rounded-badge px-1 text-[12px] text-text-secondary transition-colors hover:text-accent"
+              data-testid="db-backup-open-all"
+              @click="backupManagerVisible = true"
+            >
+              全部 {{ backups.length }} 条 ›
             </button>
           </div>
         </section>
@@ -855,33 +870,53 @@ async function importLegacyJson(): Promise<void> {
         class="rounded-lg border border-border bg-card-bg p-5 shadow-[var(--shadow-1)]"
       >
         <h3 class="settings-title">关于</h3>
-        <dl class="flex flex-col gap-2 text-sm">
-          <div class="flex gap-2">
-            <dt class="text-text-tertiary">应用</dt>
-            <dd class="font-medium text-text-primary">{{ APP_NAME }}</dd>
-          </div>
-          <div class="flex gap-2">
-            <dt class="text-text-tertiary">版本</dt>
-            <dd class="text-text-primary" data-testid="about-version">{{ APP_VERSION }}</dd>
-          </div>
-          <div class="flex gap-2">
-            <dt class="text-text-tertiary">说明</dt>
-            <dd class="text-text-secondary">{{ APP_DESCRIPTION }}</dd>
-          </div>
-        </dl>
 
-        <!-- 检查更新（2026-10-04）：只"发现 + 引导下载"，不自动替换 -->
-        <div class="mt-4 flex flex-col gap-2 border-t border-hairline pt-4">
+        <!-- 品牌头卡（2026-10-04 照参照图重做）：图标 + 名称 + 定位语 + 版本·渠道 -->
+        <div class="mt-3 flex items-center gap-4 rounded-lg bg-media-bg p-4">
+          <div
+            class="flex h-14 w-14 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-primary to-primary-active text-xl font-bold text-text-on-accent"
+            aria-hidden="true"
+          >
+            汉
+          </div>
+          <div class="min-w-0">
+            <p class="text-[17px] font-semibold leading-tight text-text-primary">{{ APP_NAME }}</p>
+            <p class="mt-1 text-xs text-text-secondary">{{ APP_DESCRIPTION }}</p>
+            <p class="mt-1 text-[11px] text-text-tertiary">
+              版本
+              <span data-testid="about-version">{{ APP_VERSION }}</span>
+              · 文件夹版 / 单文件版
+            </p>
+          </div>
+        </div>
+
+        <!-- 检查更新（2026-10-04）：只"发现 + 引导下载"，不自动替换。
+             整宽浅底按钮照参照图语言：bg-primary-soft + 主色字，hover 走 primary-soft-hover。 -->
+        <button
+          type="button"
+          class="mt-4 flex h-10 w-full items-center justify-center gap-2 rounded-badge bg-primary-soft text-sm font-medium text-accent transition-colors hover:bg-[var(--primary-soft-hover)] active:bg-[var(--primary-soft-strong)] disabled:cursor-not-allowed disabled:opacity-40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+          data-testid="update-check"
+          :disabled="updateChecking"
+          @click="onCheckUpdate"
+        >
+          <svg
+            class="h-4 w-4"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            aria-hidden="true"
+          >
+            <path d="M21 12a9 9 0 1 1-2.64-6.36" />
+            <path d="M21 3v6h-6" />
+          </svg>
+          {{ updateChecking ? '正在检查…' : '检查更新' }}
+        </button>
+
+        <div class="mt-3 flex flex-col gap-2">
           <div class="flex items-center gap-3">
-            <button
-              type="button"
-              class="rounded-badge border border-border bg-card-bg px-3 py-1.5 text-sm text-text-secondary transition-colors hover:bg-card-bg-hover hover:text-text-primary active:bg-card-bg-pressed disabled:cursor-not-allowed disabled:opacity-40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
-              data-testid="update-check"
-              :disabled="updateChecking"
-              @click="onCheckUpdate"
-            >
-              {{ updateChecking ? '正在检查…' : '检查更新' }}
-            </button>
             <button
               v-if="updateManifest"
               type="button"
@@ -895,8 +930,9 @@ async function importLegacyJson(): Promise<void> {
           <p class="text-xs leading-5 text-text-tertiary" data-testid="update-status">
             {{ updateStatusText }}
           </p>
-          <p v-if="updateManifest" class="text-xs leading-5 text-text-tertiary">
-            下载后替换掉原来的 exe 即可，数据（app\data）不受影响。
+          <p class="text-xs leading-5 text-text-tertiary">
+            更新：文件夹版解压后覆盖程序文件（保留 data 目录）；单文件版直接替换
+            exe。两种方式数据都不受影响。
           </p>
         </div>
       </section>

@@ -81,12 +81,24 @@ describe('visual: 设置页', () => {
     await shoot({
       name: 'settings',
       panels: [
-        { label: '设置页整页（分组 / 三级层级 / 密度）', html: await settingsHtml(), width: 900, height: '1560px' },
+        { label: '设置页整页（分组 / 三级层级 / 密度）', html: await settingsHtml(), width: 900, height: '1800px' },
         {
           label: '界面与预览：三件小设置一行（标题 / 选项 / 一行小字）',
           html: await settingsHtml('[data-testid="settings-quick-row"]'),
           width: 900,
           height: '150px'
+        },
+        {
+          label: '导入与自检：两件并排一行（父级自检 ｜ 导入旧版数据）',
+          html: await settingsHtml('[data-testid="settings-import-check-row"]'),
+          width: 900,
+          height: '170px'
+        },
+        {
+          label: '关于：品牌头卡 + 整宽浅底「检查更新」按钮',
+          html: await settingsHtml('[data-testid="settings-about-section"]'),
+          width: 560,
+          height: '330px'
         }
       ]
     })

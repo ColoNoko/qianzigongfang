@@ -1,7 +1,7 @@
 {
-  "version": "1.0.0",
-  "notes": "首个公开版本：项目树 / 四种工序（嵌字·翻译·校对·监修）/ 进度页（更新至·上次更新·最近出勤）/ 职责 / 对照看图 / 标记台账与撤销 / 备份还原 / 新手引导。下载后解压到单独文件夹，双击「汉化工坊.exe」；升级解压到原文件夹并覆盖，data\\ 里的标记不受影响。",
-  "url": "https://gitee.com/Luo-yuan-z/qianzi-gongfang/releases/download/v1.0.0/汉化工坊-1.0.0-portable.7z",
-  "sha256": "83bf9f6ddb707d0e789338597d79fc34c18a046b2b8701380e87fd490ff20c8e",
-  "size": 81088259
+  "version": "1.0.1",
+  "notes": "设置页改版：关于区换成品牌头卡 + 整宽「检查更新」按钮；「父级自检」「导入旧版数据」并排一行；分组顺序按常用度重排。推荐下载「文件夹版」：解压到单独文件夹后双击「汉化工坊.exe」；升级解压回原文件夹覆盖，data 里的标记不受影响。",
+  "url": "https://gitee.com/Luo-yuan-z/qianzi-gongfang/releases/download/v1.0.1/%E6%B1%89%E5%8C%96%E5%B7%A5%E5%9D%8A-1.0.1-%E6%96%87%E4%BB%B6%E5%A4%B9%E7%89%88.7z",
+  "sha256": "5cfeb9106a5edcf02386da23358f414f4dd6170b271072ab0b79942445548085",
+  "size": 81132336
 }

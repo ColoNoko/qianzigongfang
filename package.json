@@ -1,7 +1,7 @@
 {
   "name": "qianzi-gongfang",
   "productName": "汉化工坊",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "汉化工坊 — Electron + Vue3 + TS 嵌字/管理应用",
   "main": "./out/main/index.js",
   "author": "colo94",
