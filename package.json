@@ -1,0 +1,92 @@
+{
+  "name": "qianzi-gongfang",
+  "productName": "汉化工坊",
+  "version": "1.0.0",
+  "description": "汉化工坊 — Electron + Vue3 + TS 嵌字/管理应用",
+  "main": "./out/main/index.js",
+  "author": "colo94",
+  "license": "MIT",
+  "private": true,
+  "packageManager": "pnpm@11.10.0",
+  "engines": {
+    "node": ">=22.12.0 <23",
+    "pnpm": ">=11.10.0 <12"
+  },
+  "scripts": {
+    "dev": "electron-vite dev",
+    "start": "electron-vite preview",
+    "icons:sync": "node scripts/sync-icons.mjs",
+    "export:win-source": "node scripts/export-windows-source.mjs",
+    "watch:win-source": "node scripts/export-windows-source.mjs --watch",
+    "build": "electron-vite build",
+    "build:unpack": "electron-vite build && electron-builder --dir",
+    "build:win": "electron-vite build && electron-builder --win nsis --x64",
+    "build:win:x64": "electron-vite build && electron-builder --win nsis --x64",
+    "build:win:arm64": "electron-vite build && electron-builder --win nsis --arm64",
+    "build:win:portable": "electron-vite build && electron-builder --win portable --x64 && node scripts/export-windows-source.mjs",
+    "build:win:unpack": "electron-vite build && electron-builder --win --x64 --dir",
+    "build:win:check": "tsc --noEmit -p tsconfig.node.json && vue-tsc --noEmit -p tsconfig.web.json && vitest run && eslint src --ext .ts,.vue && electron-vite build && electron-builder --win portable --x64 && node scripts/export-windows-source.mjs",
+    "release:win:portable": "tsc --noEmit -p tsconfig.node.json && vue-tsc --noEmit -p tsconfig.web.json && vitest run && eslint src --ext .ts,.vue && electron-vite build && electron-builder --win portable --x64 && node scripts/export-windows-source.mjs",
+    "release:win:app": "node scripts/deliver-windows.mjs",
+    "release:win:app:launch": "node scripts/deliver-windows.mjs --launch",
+    "build:mac": "electron-vite build && electron-builder --mac",
+    "build:linux": "electron-vite build && electron-builder --linux",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "verify:quick": "vitest run --changed --passWithNoTests",
+    "verify:full": "tsc --noEmit -p tsconfig.node.json && vue-tsc --noEmit -p tsconfig.web.json && vitest run && electron-vite build",
+    "visual": "vitest run --config vitest.visual.config.ts",
+    "lint": "eslint src --ext .ts,.vue",
+    "lint:fix": "eslint src --ext .ts,.vue --fix",
+    "format": "prettier --write src",
+    "format:check": "prettier --check src",
+    "typecheck": "tsc --noEmit -p tsconfig.node.json && vue-tsc --noEmit -p tsconfig.web.json",
+    "postinstall": "electron-builder install-app-deps",
+    "public:audit": "node scripts/sync-public.mjs --audit-only",
+    "public:sync": "node scripts/sync-public.mjs --to ../qianzi-gongfang-public",
+    "release:portable": "node scripts/make-release.mjs"
+  },
+  "lint-staged": {
+    "src/**/*.{ts,vue}": [
+      "eslint --fix",
+      "prettier --write"
+    ],
+    "src/**/*.{css,md}": [
+      "prettier --write"
+    ]
+  },
+  "dependencies": {
+    "@electron-toolkit/preload": "^3.0.2",
+    "@electron-toolkit/utils": "^4.0.0",
+    "ag-psd": "^31.0.2",
+    "extract-zip": "^2.0.1"
+  },
+  "devDependencies": {
+    "@electron-toolkit/tsconfig": "^2.0.0",
+    "@types/node": "^22.19.1",
+    "@typescript-eslint/eslint-plugin": "^7.18.0",
+    "@typescript-eslint/parser": "^7.18.0",
+    "@vitejs/plugin-vue": "^6.0.2",
+    "@vue/test-utils": "^2.4.11",
+    "autoprefixer": "^10.4.20",
+    "echarts": "^5.5.1",
+    "electron": "^39.8.10",
+    "electron-builder": "^26.0.12",
+    "electron-vite": "^5.0.0",
+    "eslint": "^8.57.0",
+    "eslint-plugin-vue": "^9.27.0",
+    "jsdom": "^29.1.1",
+    "lint-staged": "^17.0.8",
+    "pinia": "^2.2.6",
+    "postcss": "^8.4.49",
+    "prettier": "^3.9.4",
+    "tailwindcss": "^3.4.15",
+    "typescript": "^5.9.3",
+    "vite": "^7.2.6",
+    "vitest": "^4.1.9",
+    "vue": "^3.5.13",
+    "vue-eslint-parser": "^10.4.1",
+    "vue-router": "^4.4.5",
+    "vue-tsc": "^3.1.6"
+  }
+}

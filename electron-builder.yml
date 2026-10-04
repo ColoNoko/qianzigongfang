@@ -1,0 +1,97 @@
+appId: com.qianzi-gongfang.app
+productName: 汉化工坊
+# 本机（CN）到 GitHub 经常不可达（打包实测多次 ETIMEDOUT 20.205.243.166），而本项目
+# 每次 `--dir` 打包都会重新下载 Electron 发行包（实测：本地 C:\...\electron\Cache 里
+# 已有同名 zip 也照样重下），所以固定走 npmmirror。海外/离线环境删掉这段即回退官方源。
+electronDownload:
+  mirror: https://npmmirror.com/mirrors/electron/
+directories:
+  buildResources: build
+# 只随包分发这两种语言的 Electron 资源（`locales/*.pak`）。
+#
+# 不写这一行 = **全语言 44.2 MB** 塞进每一个包（`app/` 一份、`dist/` 再一份，2026-10-01 实测）。
+# 写了之后 `locales/` 只剩 zh-CN + en-US（实测约 1.3 MB）→ 每次交付省约 40 MB。
+#
+# 影响面为什么可以忽略：界面文案全是本项目自己的 i18n 硬编码（不走 Electron 的 locale 资源）；
+# Electron 自带菜单本项目没用到；原生对话框只有 confirmPsFallback（按钮文字
+# 「依然打开ps / 取消」是自己传的）与 showErrorBox（标题/正文自传）—— 都不取 locale 文案。
+electronLanguages:
+  - zh-CN
+  - en-US
+files:
+  - '!**/.vscode/*'
+  - '!src/*'
+  - '!release/*'
+  - '!electron.vite.config.{js,ts,mjs,cjs}'
+  - '!{.eslintcache,dev-app-update.yml,CHANGELOG.md,README.md}'
+  - '!{.env,.env.*,.npmrc,pnpm-lock.yaml}'
+  - '!{tsconfig.json,tsconfig.node.json,tsconfig.web.json,tailwind.config.ts,postcss.config.js}'
+  # ── 开发杂物：不该随程序分发（2026-10-01 第一批 A1）───────────────────────
+  # 依据：解 asar 文件表逐条查出来的 —— 这些当时真的被打进了 app.asar。
+  # ⚠️ 千万别在这里排除 `out/**` 或 `resources/**`：前者是程序本体（含
+  #    out/renderer/index.html），后者要经 asarUnpack 落到 app.asar.unpacked。
+  - '!logs{,/**}'                 # 开发期日志（实测 1.33 MB，含真实路径与项目名）
+  - '!docs{,/**}'                 # 方案文档；docs/samples 只在 PS 里手工跑，非运行时依赖
+  - '!**/*.md'                    # 开发文档不打包（实测省 224 KB）
+  - '!**/*.tsbuildinfo'           # 增量编译缓存（实测两份合计 180 KB）
+  - '!icon.png'                   # 项目根那个 1 MB 图标源：给 scripts/sync-icons.mjs 用，不进包
+  - '!index.html'                 # 项目根那个 94 KB 残留（全仓无引用；程序加载的是 out/renderer/index.html）
+  - '!scripts{,/**}'              # 交付/导出脚本（开发机用，运行时不读）
+  - '!.omo{,/**}'                 # 计划/临时笔记目录（.gitignore 里也有，别让它进包）
+  - '!temp{,/**}'                 # 一次性探针、截图工装产物（工作区级的临时目录）
+  - '!build-windows.bat'
+  - '!启动开发版.bat'
+  - '!export-windows-source.command'
+  - '!{.eslintrc.cjs,.prettierignore,.prettierrc}'
+  - '!{vitest.config.ts,vitest.visual.config.ts,pnpm-workspace.yaml}'
+  # ── 第三方依赖里的死重量（2026-10-04，逐条实测）────────────────────────
+  # 依据：解 asar 文件表 + 逐目录实测。`out/**` 与 `resources/**` 照旧必须保留。
+  # ⚠️ 这几条只作用于 `node_modules/`，碰不到程序本体。
+  # 实测总账：改前 asar 6.92 MB + app.asar.unpacked 19 MB ≈ **26 MB**；
+  #          改后 asar 9.78 MB + unpacked 0.27 MB ≈ **10 MB**（asar 变大是因为
+  #          ag-psd 从"解包到磁盘"变成"装进 asar"，总占用反而降了 16 MB）。
+  - '!**/node_modules/**/.v8-cache/**'
+  #   ↑ Node 的模块编译缓存（V8 bytecode）。来源是**构建机**：全仓 0 处
+  #     `NODE_COMPILE_CACHE` / `enableCompileCache` 引用，Electron 默认也不开，
+  #     所以它是纯构建产物、运行时不会再生成。
+  #     ⚠️ **这条是关键**：它同时是 `ag-psd` 被整包 `asarUnpack` 的**唯一原因** ——
+  #        里面 2516 个**无扩展名**文件命中了 electron-builder 的"疑似原生模块"启发式，
+  #        于是整个包被解到磁盘上（实测解包 12.28 MB，其中缓存占 8.69 MB）。
+  #        排掉它之后 ag-psd 不再解包，光这一条就省下近 16 MB。
+asarUnpack:
+  - resources/**
+win:
+  executableName: 汉化工坊
+  icon: build/icon.ico
+nsis:
+  artifactName: ${productName}-${version}-setup.${ext}
+  shortcutName: ${productName}
+  uninstallDisplayName: ${productName}
+  createDesktopShortcut: always
+portable:
+  artifactName: ${productName}-${version}-portable.${ext}
+mac:
+  icon: build/icon.icns
+  entitlementsInherit: build/entitlements.mac.plist
+  extendInfo:
+    - NSCameraUsageDescription: Application requests access to the device's camera.
+    - NSMicrophoneUsageDescription: Application requests access to the device's microphone.
+    - NSDocumentsFolderUsageDescription: Application requests access to the user's Documents folder.
+    - NSDownloadsFolderUsageDescription: Application requests access to the user's Downloads folder.
+  notarize: false
+dmg:
+  artifactName: ${productName}-${version}.${ext}
+linux:
+  icon: build/icon.png
+  target:
+    - AppImage
+    - snap
+    - deb
+  maintainer: electronjs.org
+  category: Utility
+appImage:
+  artifactName: ${productName}-${version}.${ext}
+npmRebuild: false
+publish:
+  provider: generic
+  url: https://example.com/auto-updates

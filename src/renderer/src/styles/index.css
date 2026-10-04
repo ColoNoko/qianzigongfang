@@ -1,0 +1,302 @@
+/* Design tokens must be loaded before Tailwind layers so var(--token)
+ * references in @tailwind base/components/utilities resolve correctly. */
+@import './tokens.css';
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html,
+body,
+#app {
+  height: 100%;
+  margin: 0;
+}
+
+html {
+  font-size: 16px;
+  text-size-adjust: 100%;
+  background: var(--app-bg);
+  color-scheme: light;
+}
+
+html[data-theme='dark'] {
+  color-scheme: dark;
+}
+
+body {
+  font-family:
+    -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Microsoft YaHei UI', 'Microsoft YaHei',
+    sans-serif;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  background: var(--app-bg);
+  color: var(--text-primary);
+  transition:
+    background-color var(--dur-base) var(--ease-out),
+    color var(--dur-fast) var(--ease-out);
+}
+
+* {
+  scrollbar-color: var(--border-strong) var(--bg-sunken);
+}
+
+::selection {
+  background: var(--selection-bg);
+  color: var(--text-primary);
+}
+
+:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
+select {
+  border-radius: 3px !important;
+}
+
+select option {
+  background: var(--card-bg);
+  color: var(--text-primary);
+  font-weight: 400;
+}
+
+select option:checked,
+select option:focus,
+select option:hover {
+  background: var(--accent);
+  color: var(--text-on-accent);
+  font-weight: 700;
+}
+
+/* 页面切换的淡入。
+ *
+ * 页面组件在每次导航时都是重新挂载的（Import 例外，它被 KeepAlive 缓存），
+ * 所以把这个类挂在页面根元素上就等于"每次进入淡入一次"。
+ *
+ * 为什么不用 <Transition> 包 RouterView：那要求被切换的组件是**单根**的，
+ * 而 Project.vue 的模板是 v-if/v-else 分支 + 两个弹窗，改结构（或加一层包裹
+ * div）会动到 h-full 的布局链，风险大于收益。一个 animation 类零风险。
+ *
+ * prefers-reduced-motion 下面那条全局规则会把 duration 压到 0.01ms。 */
+@keyframes page-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.page-in {
+  animation: page-in var(--dur-base) var(--ease-out) both;
+}
+
+/* 「进度」页时间线抽屉的入场（2026-10-03）。
+ *
+ * 为什么拆成两个动画：抽屉根节点是 `fixed inset-0`，把位移加在**它**身上会连压暗背景
+ * 一起推走 —— 中途左边露出一条没压暗的区域，就是用户截图里那道"切换痕迹"。
+ * 所以：① 背景只做淡入（快），② 面板只做位移（稍慢），两者同时开始 ⇒ 没有硬边。
+ *
+ * 为什么不用 <Transition>：项目里页面淡入就是这套 animation 类的写法（见上面 page-in），
+ * 用类名还有两个好处 —— 类名是**稳定契约**（单测能断言"背景与面板各动各的"），
+ * 且 `prefers-reduced-motion` 那条全局规则能一并压掉（<Transition> 的类不受它管）。 */
+@keyframes drawer-backdrop-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.drawer-backdrop-in {
+  animation: drawer-backdrop-in var(--dur-fast) var(--ease-out) both;
+}
+
+@keyframes drawer-panel-in {
+  from {
+    transform: translateX(100%);
+  }
+  to {
+    transform: translateX(0);
+  }
+}
+
+.drawer-panel-in {
+  animation: drawer-panel-in var(--dur-base) var(--ease-out) both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+  }
+}
+
+@media (min-resolution: 1.5dppx) {
+  body {
+    font-size: 15px;
+  }
+}
+
+/* ---------------------------------------------------------------------------
+ * 设置页的三级层级（第十七轮）
+ *
+ * 问题：小节标题原本是 `text-sm text-text-secondary`、说明是 `text-xs text-text-tertiary`
+ * —— 只差一档灰 + 2px，"这一项叫什么"和"它是什么意思"在视觉上分不开。
+ * 现在把三档写成**一处定义**（而不是在九个小节里各抄一遍工具类）：
+ *   .settings-group  分组标题（界面与预览 / 数据与工具）
+ *   .settings-title  子功能名  ← 全页最显眼的那一档（13px / 600 / 主文字色）
+ *   .settings-desc   说明      ← 11px / 三级灰
+ *   .settings-hint   控件下的一行补充（比说明再轻，可省略）
+ * 全部走 token，昼夜自动对；不引入新颜色。
+ * ------------------------------------------------------------------------- */
+.settings-group {
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--text-secondary);
+}
+
+.settings-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.settings-desc {
+  margin-top: 4px;
+  font-size: 11px;
+  line-height: 1.15rem;
+  color: var(--text-tertiary);
+}
+
+.settings-hint {
+  margin-top: 8px;
+  font-size: 11px;
+  line-height: 1rem;
+  color: var(--text-tertiary);
+}
+
+/* 小设置的"单选项"：静止态不加底色，hover 才给中性悬停 —— 一排三格时不至于吵 */
+.settings-choice {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  border-radius: var(--radius-badge);
+  padding: 4px 8px;
+  font-size: 13px;
+  line-height: 1;
+  transition: background-color var(--dur-fast) var(--ease-out);
+}
+
+.settings-choice:hover {
+  background-color: var(--card-bg-hover);
+}
+
+.settings-choice:focus-within {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* 自定义单选圆点：几何在这里，颜色由工具类给（border-accent / bg-accent …） */
+.settings-radio {
+  display: flex;
+  height: 16px;
+  width: 16px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 9999px;
+  border-width: 1px;
+  border-style: solid;
+  transition:
+    background-color var(--dur-fast) var(--ease-out),
+    border-color var(--dur-fast) var(--ease-out);
+}
+
+/* ── 职责胶囊（2026-10-03 收敛：一枚原语，三处共用）──────────────────────────
+ *
+ * 用在哪：① 侧栏 / 项目页的父级行（标签 + 菜单入口）② 「进度」页的职责列（切换控件）
+ * ③ 引导插图（照着它复刻）。**长相只在这里定义一处** —— 之前是两份各写一套工具类
+ * （一份 14×16/10px、一份 16×16/10px，还各自硬编码 rounded-[4px]），调一次漂一次。
+ *
+ * 几何：视觉高 18px；单职责 15px、双职责 30px（两段各 15px）。
+ * ⚠️ **槽宽仍是 30px**（`w-[30px]` 那条锁还在）—— 名字起点不会漂；
+ * 侧栏那枚触发区是 30×24（多出来的 3px 上下只是"好点"，行高 41px 不变）。
+ *
+ * 颜色（括号里是实测对比度，**改之前先看数字**）：
+ *   底 --bg-sunken         对卡片 1.19:1（日）/ 1.22:1（夜）—— 过"肉眼可分"门槛 1.15
+ *   边 --chip-border       对卡片 3.46:1、对**行悬停底** 3.16:1（日）；夜 3.70 / 3.11
+ *                          —— 两处都要 ≥3:1（§15.5 图形门槛）。**别改浅**：
+ *                          日 62% 在行悬停底上只剩 2.73:1，所以定在 58%（夜 54%）。
+ *   字 --text-secondary    5.64:1（日）/ 5.12:1（夜）
+ *   选中 --accent + --text-on-accent  5.88:1（日）/ 5.85:1（夜）—— 保持实心，不降档
+ *                          （tonal 方案夜间字底只有 4.18:1、填充 1.14:1，已否决）
+ */
+.duty-chip {
+  display: inline-flex;
+  align-items: stretch;
+  height: 18px;
+  border-radius: var(--radius-badge);
+  background: var(--bg-sunken);
+  box-shadow: inset 0 0 0 1px var(--chip-border);
+  overflow: hidden;
+}
+.duty-chip--single {
+  width: 15px;
+}
+.duty-chip--pair {
+  width: 30px;
+}
+
+/* 一段 = 一个字。做 button 时它就是命中区（15×18，与本仓库 16×16 图标按钮同一密度）；
+   做 span 时它只是画出来的字（引导插图）。 */
+.duty-chip__seg {
+  flex: 1 1 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1;
+  color: var(--text-secondary);
+}
+/* 两段都"未选"时（侧栏那种纯标签）要留一道缝，否则「校监」会粘成一个词；
+   「进度」页有一半是实心，色差本身就是分界，所以不加线。 */
+.duty-chip__seg--divide {
+  box-shadow: inset -1px 0 0 0 var(--chip-border);
+}
+/* 选中的那一段（只在「进度」页存在）：实心 accent + 反白字 */
+.duty-chip__seg--on {
+  background: var(--accent);
+  color: var(--text-on-accent);
+}
+/* 键盘焦点环：用 inset 偏移，否则会被 .duty-chip 的 overflow:hidden 裁掉 */
+.duty-chip__seg:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+/*
+ * 引导弹窗头部的主色渐变底带（2026-10-04 视觉精修，用户看图拍板的 A 方案）。
+ *
+ * 为什么放这里而不是 Tailwind 任意值：这是一段"多属性组合的视觉语言"
+ * （渐变方向、两个色标、透明度档位），跟 .duty-chip 一样属于
+ * "一处定义、别处只用类名"的原语 —— 散在模板里必然抄出第二份。
+ *
+ * 取色只用 token：从 --primary-soft 渐到透明，日/夜自动各自成立；
+ * 它是整个弹窗里**唯一**的主色大面 —— 头部之外不再有第二块大面积主色，
+ * "焦点在标题带"这件事靠稀缺性成立，不靠加粗。
+ */
+.guide-header-gradient {
+  background: linear-gradient(180deg, var(--primary-soft) 0%, transparent 100%);
+}

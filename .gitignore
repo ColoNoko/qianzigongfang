@@ -1,0 +1,14 @@
+node_modules
+.pnpm-store
+dist
+out
+release
+.omo
+.DS_Store
+.eslintcache
+*.tsbuildinfo
+*.log*
+# 2026-10-01：目录形式的忽略（原来只靠 *.log* 覆盖文件）
+logs/
+temp/
+*.bak-*

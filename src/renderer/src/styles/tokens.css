@@ -1,0 +1,195 @@
+/*
+ * Global design tokens — 「紫雾 · 樱花」(violet mist + sakura).
+ * theme.ts writes the same values at runtime so hue and saturation changes
+ * take effect immediately. These declarations are the no-JS/light fallback.
+ *
+ * 角色分工：每个 token 只干一件事。旧版把 --primary-soft 同时当
+ * 悬停底 / 按钮静止底 / 缩略图占位底 / 页脚整条底 / 导航激活底，
+ * 结果是"强调色被当背景色用"——真正的强调失效，满屏蓝盒子。
+ *
+ *   --bg              页面画布
+ *   --bg-raised       面板（图标栏 / 侧栏 / 卡片 / 工具条）
+ *   --bg-sunken       凹陷（输入框 / 表头 / 代码块）
+ *   --media-bg        媒体底（缩略图占位、进度条轨道）—— 中性，永不用强调色
+ *   --hover-surface   悬停
+ *   --surface-pressed 按下
+ *   --select-surface  持久选中（必须比悬停深一档）
+ *   --primary-soft    强调色极淡底（仅落点高亮、空状态图标底）
+ *   --done            完成/达成（樱花粉：进度填充、成就数字、完成角标）
+ *   --hairline        1px 内部细线（比 --border 浅，用于行分隔）
+ */
+
+:root {
+  --hue: 262;
+  --sat: 58%;
+  --neutral-sat: 8%;
+
+  /* Primary scale —— 柔和紫罗兰，而不是企业蓝。 */
+  --primary: hsl(262 58% 52%);
+  --primary-hover: hsl(262 58% 46%);
+  --primary-active: hsl(262 58% 40%);
+  --primary-fg: hsl(262 58% 98%);
+  --primary-soft: hsl(262 55% 93%);
+  --primary-soft-hover: hsl(262 55% 89%);
+  /* 持久选中态专用：比悬停深一档。悬停走 --hover-surface，
+     两者不再像旧版那样共用同一个值（那时只有 1.10:1、看不出差别）。 */
+  --primary-soft-strong: hsl(262 55% 91.5%);
+  --primary-border: hsl(262 50% 80%);
+
+  /* Neutral scale —— 日间"灰画布 + 白面板"，夜间"深紫灰 + 抬升面板"。
+     日间 96 ↔ 100 = 1.10:1；夜间 12 ↔ 17 = 1.16:1（旧值 11/15 只有 1.11:1）。
+     Keep in sync with NEUTRAL_LIGHTNESS in stores/theme.ts. */
+  --bg: hsl(262 8% 96%);
+  --bg-raised: hsl(262 8% 100%);
+  --bg-sunken: hsl(262 8% 93%);
+  --media-bg: hsl(262 6% 96.5%);
+  --hover-surface: hsl(262 30% 96.5%);
+  --surface-pressed: hsl(262 34% 94.5%);
+  --select-surface: hsl(262 55% 91.5%);
+  --hairline: hsl(262 10% 92%);
+  --fg: hsl(262 10% 14%);
+  --fg-muted: hsl(262 8% 42%);
+  /* 45% keeps tertiary text at 5.20:1 on a white panel (WCAG AA for body text).
+     Keep in sync with NEUTRAL_LIGHTNESS.light.subtle in stores/theme.ts. */
+  --fg-subtle: hsl(262 8% 45%);
+  --border: hsl(262 10% 90%);
+  --border-strong: hsl(262 10% 76%);
+  /* 小控件（职责胶囊）的 1px 外框：**3:1 档**。现成的 --border-strong 只有 1.90:1（日），
+     达不到 §15.5 的"图形 ≥3:1"；而它被全站很多地方用着，不能为这一枚胶囊整体加深。
+     ⚠️ 取值标准：对**卡片底**和**行悬停底**都要 ≥3:1（日 58% → 3.46 / 3.16:1）。 */
+  --chip-border: hsl(262 10% 58%);
+
+  /* 完成色：樱花粉。日间对白面板 4.08:1、夜间 4.83:1 —— 做填充和文字都达标，
+     与主色（紫）在色相上完全分开，所以"做完了"和"可点击"不会混。 */
+  --done: hsl(342 62% 57%);
+  --done-fg: hsl(342 62% 98%);
+  --done-soft: hsl(342 55% 95%);
+
+  /* Semantic colors. */
+  --danger: hsl(4 70% 48%);
+  --danger-fg: hsl(4 70% 98%);
+  --danger-soft: hsl(4 65% 94%);
+  --success: hsl(145 60% 48%);
+  --success-fg: hsl(145 60% 98%);
+  --success-soft: hsl(145 65% 94%);
+  --warning: hsl(38 85% 48%);
+  --warning-fg: hsl(38 85% 98%);
+  --warning-soft: hsl(38 65% 94%);
+  --info: hsl(210 80% 48%);
+  --info-fg: hsl(210 80% 98%);
+  --info-soft: hsl(210 65% 94%);
+
+  /* 日间材质 = 纸：阴影带一点主色相，比中性灰影"贵"。
+     夜间材质 = 玻璃：见 [data-theme='dark']，用纯黑 + 顶边高光。 */
+  --shadow-1: 0 1px 2px hsl(262 30% 20% / 0.05);
+  --shadow-2: 0 4px 12px hsl(262 30% 20% / 0.08);
+  --shadow-3: 0 12px 32px hsl(262 30% 20% / 0.12);
+  --shadow-card: 0 1px 2px hsl(262 30% 20% / 0.05), 0 4px 12px hsl(262 30% 20% / 0.07);
+  --shadow-card-hover: 0 2px 6px hsl(262 30% 20% / 0.07), 0 10px 24px hsl(262 30% 20% / 0.12);
+
+  /* Spacing, radii, typography and motion from the reference contract. */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-7: 32px;
+  --space-8: 64px;
+  --radius-sm: 4px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  /* 卡片外框专用。汉化工坊的主视觉就是"一墙缩略图"，4px 直角是整屏"表格感"
+     的主要来源，所以卡片单独提到 10px。 */
+  --radius-card: 10px;
+  /* 小组件圆角（按钮 / 胶囊 / 输入框 / 进度条轨道）。从 4px 抬到 6px：
+     4px 在 28~32px 高的按钮上几乎看不出圆角，整体像 2010 年的 Windows 表单。 */
+  --radius-badge: 6px;
+  --radius-full: 999px;
+  --dur-fast: 120ms;
+  --dur-base: 200ms;
+  --dur-slow: 350ms;
+  --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+
+  /* Semantic layer used by the existing renderer. */
+  --surface: var(--bg-raised);
+  --surface-hover: var(--hover-surface);
+  --control-bg: var(--bg-sunken);
+  --control-border: var(--border-strong);
+  --ring: var(--primary);
+  --link: var(--primary);
+  --selection-bg: var(--primary-soft);
+
+  /* Compatibility aliases keep all current components on the new system.
+     --card-bg-hover 是本轮最关键的一条重接线：它以前等于 --primary-soft，
+     于是"悬停 / 按钮静止底 / 缩略图占位底 / 页脚整条底 / 导航激活底"
+     五种含义共用同一个蓝紫色块。现在它只表示悬停。 */
+  --accent: var(--primary);
+  --text-on-accent: var(--primary-fg);
+  --app-bg: var(--bg);
+  --card-bg: var(--bg-raised);
+  --card-bg-hover: var(--hover-surface);
+  --card-bg-pressed: var(--surface-pressed);
+  --selected-bg: var(--select-surface);
+  --selected-border: var(--primary-border);
+  --text-primary: var(--fg);
+  --text-secondary: var(--fg-muted);
+  --text-tertiary: var(--fg-subtle);
+}
+
+[data-theme='dark'] {
+  --primary: hsl(262 58% 68%);
+  --primary-hover: hsl(262 58% 74%);
+  --primary-active: hsl(262 58% 80%);
+  --primary-fg: hsl(262 58% 12%);
+  --primary-soft: hsl(262 45% 26%);
+  --primary-soft-hover: hsl(262 45% 30%);
+  /* 夜间选中态本轮起不再等于悬停：旧值两者同为 18%，在白面板上只有 1.06:1，
+     "选中"和"划过"看起来一模一样（这是"深色模式不够精致"的主因）。 */
+  --primary-soft-strong: hsl(262 45% 31%);
+  --primary-border: hsl(262 40% 38%);
+
+  --bg: hsl(262 8% 12%);
+  --bg-raised: hsl(262 8% 17%);
+  --bg-sunken: hsl(262 8% 9.5%);
+  --media-bg: hsl(262 8% 14%);
+  --hover-surface: hsl(262 12% 22%);
+  --surface-pressed: hsl(262 14% 24.5%);
+  --select-surface: hsl(262 45% 31%);
+  --hairline: hsl(262 12% 24%);
+  --fg: hsl(262 8% 94%);
+  --fg-muted: hsl(262 8% 68%);
+  /* 60% keeps tertiary text at 4.77:1 on --bg-raised (WCAG AA for body text).
+     Keep in sync with NEUTRAL_LIGHTNESS.dark.subtle in stores/theme.ts. */
+  --fg-subtle: hsl(262 8% 60%);
+  --border: hsl(262 10% 27%);
+  --border-strong: hsl(262 10% 38%);
+  /* 见日间那段：夜 54% → 对卡片 3.70:1、对行悬停底 3.11:1（都 ≥3） */
+  --chip-border: hsl(262 10% 54%);
+
+  --done: hsl(342 60% 66%);
+  --done-fg: hsl(342 60% 12%);
+  --done-soft: hsl(342 35% 22%);
+
+  --danger: hsl(4 70% 62%);
+  --danger-fg: hsl(4 70% 12%);
+  --danger-soft: hsl(4 35% 17%);
+  --success: hsl(145 60% 62%);
+  --success-fg: hsl(145 60% 12%);
+  --success-soft: hsl(145 35% 17%);
+  --warning: hsl(38 85% 62%);
+  --warning-fg: hsl(38 85% 12%);
+  --warning-soft: hsl(38 35% 17%);
+  --info: hsl(210 80% 62%);
+  --info-fg: hsl(210 80% 12%);
+  --info-soft: hsl(210 35% 17%);
+
+  /* 夜间材质 = 玻璃：不是"更黑的阴影"，而是"抬升的面 + 顶边一道高光"。
+     旧值 rgb(0 0 0 / .5) 是纯黑洞，叠在深灰上只会更脏。 */
+  --shadow-1: 0 1px 2px rgb(0 0 0 / 0.4);
+  --shadow-2: 0 4px 14px rgb(0 0 0 / 0.45);
+  --shadow-3: 0 12px 32px rgb(0 0 0 / 0.55);
+  --shadow-card: 0 1px 2px rgb(0 0 0 / 0.4), inset 0 1px 0 hsl(262 40% 90% / 0.05);
+  --shadow-card-hover: 0 6px 20px rgb(0 0 0 / 0.5), inset 0 1px 0 hsl(262 40% 90% / 0.07);
+}
