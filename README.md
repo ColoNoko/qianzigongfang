@@ -22,13 +22,28 @@
 
 ## 下载与安装（普通用户）
 
-1. 到 [Releases](https://gitee.com/Luo-yuan-z/qianzi-gongfang/releases) 下载最新的 `汉化工坊-<版本>-portable.exe`
-2. 放到你想放的地方（**建议单独一个文件夹**），双击运行
-3. 升级：程序里 **设置 → 关于 → 检查更新**，或直接下新版 exe **覆盖原来那个文件**
+到 [Releases](https://gitee.com/Luo-yuan-z/qianzi-gongfang/releases) 下载最新版。有两种形态，**任选一种**：
 
-> **你的数据在哪**：程序第一次运行会在 exe 旁边建 `data/` 文件夹，里面有数据库与备份。
-> **升级只需要替换那个 exe**，`data/` 不用动、也不该动 —— 换 exe 不会影响你的标记。
-> 所以别把 exe 单独放桌面、却指望数据跟着走：**exe 与 `data/` 要在同一个文件夹里**。
+| 形态 | 文件名 | 怎么用 |
+|---|---|---|
+| **文件夹版**（主推） | `汉化工坊-<版本>-文件夹版.7z` | 解压到一个**单独的空文件夹** → 双击里面的 `汉化工坊.exe`。启动快 |
+| 单文件版 | `汉化工坊-<版本>-单文件版.exe` | 放哪儿都行，**双击即用**；不熟电脑的人首选 |
+
+> ⚠️ 首次使用请解压到**单独一个空文件夹**，别直接解到桌面或下载目录那一堆文件里。
+
+### 升级
+
+1. 程序里 **设置 → 关于 → 检查更新** → 点「去下载」到下载页
+2. **文件夹版**：把新包**解压到原来那个文件夹**，提示"是否覆盖"选**是**
+3. **单文件版**：把新 exe **覆盖**原来那个 exe 就行
+
+**你的标记数据在 `data\` 文件夹里，不在压缩包内，升级不会碰它** ✓
+
+> ⚠️ 别解压到**新文件夹**：`data\` 是跟着文件夹走的，那样你会得到一份"空项目"的新副本
+> （看起来像"我的项目不见了"，回到原文件夹就能看到数据）。
+
+> **数据在哪**：程序第一次运行会在程序旁边建 `data/` 文件夹，里面有数据库与备份。
+> 所以**程序与 `data/` 要在同一个文件夹里**，别把 exe 单独挪走。
 
 ## 从源码构建（开发者）
 
@@ -42,7 +57,8 @@ pnpm test           # 全量单元测试
 pnpm run typecheck  # tsc + vue-tsc
 pnpm lint           # eslint
 
-pnpm build:win:portable   # 打 Windows 绿色单文件（产物在 dist/）
+pnpm build:win:portable   # 单文件版（产物在 dist/）
+node scripts/deliver-windows.mjs --archive   # 文件夹版（产物在 ../dist-packages/，需本机有 7-Zip）
 ```
 
 Windows 打包会从 `npmmirror` 镜像下载 Electron（见 `electron-builder.yml` 的 `electronDownload.mirror`）；
