@@ -228,6 +228,8 @@
   "src\\shared\\__tests__\\status.spec.ts",
   "src\\shared\\__tests__\\update.spec.ts",
   "src\\test-setup.ts",
+  "docs\\samples\\labelplus-manifest.sample.json",
+  "docs\\samples\\run-manifest.jsx",
   "build\\entitlements.mac.plist",
   "build\\icon.ico",
   "resources\\icon.png",

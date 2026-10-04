@@ -1,0 +1,108 @@
+{
+  "manifestVersion": 2,
+  "jobId": "sample-0001",
+  "generatedAt": "2026-09-23T15:04:05+08:00",
+  "generatedBy": "汉化工坊手写样例",
+
+  "job": {
+    "labelFilePath": "D:/path/to/comic/labels.txt",
+    "sourceDirectory": "D:/path/to/comic",
+    "outputDirectory": "D:/path/to/comic/output",
+    "overwrite": true,
+    "closeAfterSave": true
+  },
+
+  "document": {
+    "backgroundKind": "source-image",
+    "backgroundTemplatePath": null,
+    "existingPsdPath": null,
+    "resolutionPpi": 300,
+    "colorMode": "RGB",
+    "layerGroupMode": "create",
+    "outputLabelNumber": true,
+    "labelNumberStyle": {
+      "font": { "id": "builtin-arial", "family": "Arial", "style": "Regular", "postScriptName": "ArialMT" },
+      "fontSizePx": 12,
+      "fillColor": "#ff0000"
+    }
+  },
+
+  "save": {
+    "format": "psd",
+    "asCopy": false
+  },
+
+  "defaults": {
+    "positionUnit": "normalized",
+    "textStyle": {
+      "font": {
+        "id": "builtin-arial",
+        "family": "Arial",
+        "style": "Regular",
+        "postScriptName": "ArialMT"
+      },
+      "fontSizePx": 24,
+      "direction": "horizontal",
+      "leadingPercent": 100,
+      "alignment": "left",
+      "fillColor": "#000000",
+      "strokeColor": "#ffffff",
+      "strokeWidthPx": 0,
+      "fauxBold": false,
+      "fauxItalic": false,
+      "shadow": {
+        "enabled": false,
+        "color": "#000000",
+        "opacity": 0.5,
+        "distancePx": 4,
+        "blurPx": 4,
+        "angleDeg": 120
+      }
+    }
+  },
+
+  "groups": {
+    "框外": { "enabled": true, "action": "", "textStyle": { "direction": "vertical" } },
+    "框内": { "enabled": true, "action": "", "textStyle": { "direction": "horizontal" } }
+  },
+
+  "actions": {
+    "enabled": false,
+    "setName": "LabelPlusAction",
+    "timing": "after-each-label",
+    "onStart": "_start",
+    "onEnd": "_end",
+    "skipMissing": true
+  },
+
+  "report": {
+    "path": "D:/path/to/comic/output/.qianzi-report-sample-0001.json",
+    "level": "per-image"
+  },
+
+  "images": [
+    {
+      "labelImageName": "page-001.png",
+      "sourcePath": "D:/path/to/comic/page-001.jpg",
+      "outputPath": "D:/path/to/comic/output/page-001.psd",
+      "width": 2480,
+      "height": 3508,
+      "labels": [
+        {
+          "index": 1,
+          "group": "框外",
+          "text": "竖排测试 ABC 123",
+          "position": { "x": 0.8, "y": 0.12 },
+          "styleOverride": { "fontSizePx": 28 }
+        },
+        {
+          "index": 2,
+          "group": "框内",
+          "text": "横排测试 ABC 123",
+          "position": { "x": 0.2, "y": 0.6 },
+          "styleOverride": {}
+        }
+      ]
+    }
+  ]
+}
