@@ -1,8 +1,9 @@
 <script setup lang="ts">
 // ProjectFormModal — Add/Manage/Delete modal form for a ChildProject.
-// Pure presentational component: validates the folder path via
-// window.comicType.stat on blur, then emits save/cancel/delete.
-// Does NOT touch the registry — persistence is the parent's job.
+// Validates the folder path on blur via window.comicType.stat，并额外用
+// window.comicType.projectGetTree()（**只读**）挡住"选到了别的章节的上级目录"
+// （2026-10-04 现场），然后 emit save/cancel/delete。
+// 仍然不**写**注册表 —— persistence is the parent's job.
 // Task 5.1 of the work plan.
 import { lastPathSegment } from '@shared/paths'
 import { ref, computed, onMounted } from 'vue'
@@ -87,6 +88,47 @@ onMounted(() => {
 })
 
 // --- Path validation -------------------------------------------------------
+/**
+ * 与主进程 `project-self-check.ts` 的 `normalizePathForLookup` **同义**：
+ * `\`→`/`、NFC、小写、去尾斜杠。两处必须一致，否则"同一个目录"会认不出来。
+ */
+function normalizeForLookup(value: string): string {
+  return value
+    .replace(/\\/g, '/')
+    .normalize('NFC')
+    .toLocaleLowerCase()
+    .replace(/\/+$/, '')
+}
+
+/**
+ * 这个路径是不是**某个已登记章节目录的严格祖先**（2026-10-04）。
+ *
+ * 为什么要有它：那种路径一旦存进去，"刷新并检测新章节"会把**同级作品**当成这一话的
+ * 新章节报出来。现场两条实测：
+ *   · 把 6卷 的路径改成了 `…\老师的人偶（米饭`（= 5卷/6卷 的父目录）
+ *     ⇒ 反推出来的根爬到 `…\嵌字`，一次报出 15 条**别人的作品**；
+ *   · `白沙水族馆` 的路径本身是对的，但 `dirname` 落在分类层 `…\翻译` ⇒ 7 条误报
+ *     （那一条这里拦不住，由主进程的"容器层不自动推导"兜住）。
+ *
+ * ⚠️ 判据刻意**只用路径关系**，不用"像不像章节"的启发式 —— 那类启发式正是本次 bug 的来源。
+ * ⚠️ 读不到项目树时**不拦**：校验环节出问题，不该变成"存不了项目"。
+ */
+async function isAncestorOfRegisteredChild(target: string): Promise<boolean> {
+  try {
+    const tree = await window.comicType.projectGetTree()
+    const prefix = `${normalizeForLookup(target)}/`
+    for (const parent of tree) {
+      for (const child of parent.children) {
+        const key = normalizeForLookup(child.folderPath)
+        if (key !== '' && key.startsWith(prefix)) return true
+      }
+    }
+  } catch {
+    return false
+  }
+  return false
+}
+
 async function validatePath(): Promise<void> {
   if (!folderPath.value.trim()) {
     pathValid.value = false
@@ -95,7 +137,18 @@ async function validatePath(): Promise<void> {
   }
   pathChecking.value = true
   try {
-    await window.comicType.stat(folderPath.value.trim())
+    const target = folderPath.value.trim()
+    // 两个只读检查**并行**发出。别改成串行 —— 那会多一次往返，实测会把"保存"按钮
+    // 多禁用一拍（既有用例按 tick 数卡着这一点）。
+    const [, isAncestor] = await Promise.all([
+      window.comicType.stat(target),
+      isAncestorOfRegisteredChild(target)
+    ])
+    if (isAncestor) {
+      pathValid.value = false
+      pathError.value = '这是别的章节的上级目录，请选到「话」那一层'
+      return
+    }
     pathValid.value = true
     pathError.value = ''
     inferChapterFromPath()

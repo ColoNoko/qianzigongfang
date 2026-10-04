@@ -1,5 +1,5 @@
 import { readdir, stat } from 'node:fs/promises'
-import { dirname, relative, resolve, sep } from 'node:path'
+import { dirname, isAbsolute, relative, resolve, sep } from 'node:path'
 import type {
   SelfCheckCandidate,
   SelfCheckImportRequest,
@@ -75,11 +75,64 @@ function normalizeRoots(paths: readonly unknown[]): string[] {
 }
 
 /**
+ * `candidate` 是否**严格位于** `root` 内部（等于它自己不算）。
+ *
+ * ⚠️ `isAbsolute(rel)` 这一项**不能省** —— 2026-10-04 被真实数据抓出来的：
+ *    `path.relative()` 在**跨盘**时返回的是**绝对路径**，不是 `..\…`。实测
+ *    `relative('D:\…\【鹅妈妈】', 'E:\…\搬砖\有\完')` === `'E:\…\搬砖\有\完'`。
+ *    只判 `''` / `'..'` / `'..\'` 的话，跨盘会被判成"在里面"，于是**所有 D 盘父级的根**
+ *    都会被 E 盘那个「搬砖」触发而误挡（实测：鹅妈妈连同它的 8 条真章节被一起挡掉）。
+ *
+ * ⚠️ 上面既有的 `isPathInside()` 有**同一个洞**（也只判 `''` / `'..'`），影响面是
+ *    `isGroupingLevel()`：同一父级的根若跨盘，候选会被误判成容器层而跳过。
+ *    那是另一条路径、另一种表现，**本轮没动**（不夹带），已单独记为待办。
+ */
+function isStrictlyInside(root: string, candidate: string): boolean {
+  const rel = relative(resolve(root), resolve(candidate))
+  return rel !== '' && rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel)
+}
+
+/**
+ * 反推出来的根，是不是**容器层**（分类目录 / 作品目录）而不是"章节所在的那一层"。
+ *
+ * 判据只有一条：**别的父级**有子项目落在这个根里面。刻意**不引入**"像不像章节"的
+ * 启发式 —— 那类启发式（`hasRootProjectFiles`）正是 2026-10-04 这次 bug 的来源。
+ *
+ * 现场两条（都是真的，探针在 18 个父级上逐个数过）：
+ *   · `老师的人偶`：子项目路径被存成了"卷的父目录"，`dirname` 于是爬到 `…\嵌字`
+ *     —— 那是**作品目录**，下面每一部都是别人的作品 ⇒ 15 条误报；
+ *   · `白沙水族馆`：路径**本身是对的**，但 `dirname(它)` 落在分类层 `…\翻译`
+ *     ⇒ `『喵的』/『轻小说』/【插件】/游戏` 被当成新章节 ⇒ 7 条误报。
+ *
+ * 命中就把这个根丢掉；全丢光时上层**既有的** `roots.length === 0` 分支会给出
+ * 「无法自动确定父级目录，请手动选择一次」—— 不新增文案、不新增分支。
+ *
+ * ⚠️ 已知边界（**故意不处理**）：若两个父级**真的共用**同一个章节目录，这里会把那个根
+ *    判成容器层而多要一次手选。18 个父级里没有这种情形；真共用了，"手选一次并记住"
+ *    也是可接受的代价 —— 比静默报出十几条别人的作品好。
+ */
+function hasOtherParentsInside(
+  root: string,
+  parent: ParentProject,
+  projects: readonly ParentProject[]
+): boolean {
+  for (const other of projects) {
+    if (other.id === parent.id) continue
+    for (const child of other.children) {
+      if (isStrictlyInside(root, child.folderPath)) return true
+    }
+  }
+  return false
+}
+
+/**
  * 该父级的扫描根（可能多个）。
  *
  * 1. 用户手动记住的目录优先 —— 他说了算，不再叠加自动推导，否则"记住"的意图会被稀释。
  *    `sourceRoots` 是主字段，`sourceRoot` 是旧版单根字段，会一起读。
- * 2. 否则：**每个子项目所在的那一层**，去重后作为多个根。
+ *    ⚠️ **手动记住的根不做容器层过滤**：那是用户的明确选择，同上。
+ * 2. 否则：**每个子项目所在的那一层**，去重后作为多个根 —— 但**容器层要丢掉**
+ *    （判据见 `hasOtherParentsInside`，那是 2026-10-04 那次"28 条同级作品"的根因）。
  *
  * 为什么不能只取一个根：同一父级下的子项目可能分散在多个中间目录里
  * （真实案例：`搬砖\{无,有}\<章节>`，三个子项目横跨 `无` 和 `有`）。老实现
@@ -87,14 +140,15 @@ function normalizeRoots(paths: readonly unknown[]): string[] {
  * 是 `无 / 有 / 【红尘】` 这类**分类目录**，于是它们被当成"新章节"报给用户，
  * 又因为名字里没有数字、集数都归一化成空串而全部误报"同父级下已存在该集数"。
  */
-function getSourceRoots(parent: ParentProject): string[] {
+function getSourceRoots(parent: ParentProject, projects: readonly ParentProject[]): string[] {
   const remembered = normalizeRoots([
     ...(Array.isArray(parent.sourceRoots) ? parent.sourceRoots : []),
     ...(typeof parent.sourceRoot === 'string' ? [parent.sourceRoot] : [])
   ])
   if (remembered.length > 0) return remembered
 
-  return normalizeRoots(parent.children.map((child) => dirname(resolve(child.folderPath))))
+  const derived = normalizeRoots(parent.children.map((child) => dirname(resolve(child.folderPath))))
+  return derived.filter((root) => !hasOtherParentsInside(root, parent, projects))
 }
 
 /**
@@ -160,7 +214,9 @@ export async function previewParentSelfCheck(
   }
 
   const roots = normalizeRoots(
-    explicitSourceRoot && explicitSourceRoot.trim() ? [explicitSourceRoot] : getSourceRoots(parent)
+    explicitSourceRoot && explicitSourceRoot.trim()
+      ? [explicitSourceRoot]
+      : getSourceRoots(parent, projects)
   )
   if (roots.length === 0) {
     return {

@@ -248,3 +248,165 @@ describe('importParentSelfCheck — 未识别集数 / 多根', () => {
     expect(conflicted?.existingChapterNumber).toBe('3')
   })
 })
+
+/**
+ * 现场复现（2026-10-04）：用户点「刷新并检测新章节」，弹窗报 **28 个新章节**，
+ * 而列出来的全是**别部作品**（【鹅妈妈】/【我不能呼吸都是你的错】_BL/【遗尘】/2号的我/北欧美少女…）。
+ *
+ * 库里逐字节取证（父级 `parent-1791111808437-6kmdccu`「老师的人偶」）：
+ *   它只有一个子项，`folderPath = D:\…\嵌字\老师的人偶（米饭\`
+ *   —— 指向的是「**卷的父目录**」，而不是某一卷。
+ *   而 `getSourceRoots()` 在没记住过目录时按 `dirname(child.folderPath)` 反推扫描根，
+ *   于是根落到了 `嵌字`（**整个作品目录**）那一层 ——
+ *   它的每一个一级子目录都是一部**别的**作品，于是全部被当成"老师的人偶的新章节"。
+ *
+ * ⚠️ 这条锁**只咬现象**（同级作品不得出现在候选里、该报的卷要报出来）。
+ * 至于"该在录入时拦住这种路径"还是"该让反推更聪明"，是这条锁变红之后才谈的事。
+ */
+describe('previewParentSelfCheck — 子项目指向"卷的父目录"时（2026-10-04 现场）', () => {
+  it('同级作品不得被当成新章节，而卷本身要被报出来', async () => {
+    const hanzi = join(work, '嵌字')
+    const workRoot = join(hanzi, '老师的人偶（米饭')
+    await makeChapterDir(join(workRoot, '老师的人偶5卷'))
+    await makeChapterDir(join(workRoot, '老师的人偶6卷'))
+    // 同级作品：它们在真实库里是**别的父级**，绝不该出现在「老师的人偶」的候选里。
+    // ⚠️ 必须真把它们登记成父级 —— B1 的判据就是「别的父级的章节在不在这个根下面」。
+    await makeChapterDir(join(hanzi, '【鹅妈妈】', '惡役千金LV99 - 24'))
+    await makeChapterDir(join(hanzi, '北欧美少女', '北欧01'))
+
+    repo.tree = [
+      {
+        id: PARENT_ID,
+        title: '老师的人偶',
+        // 与库里逐字节一致：结尾多一个反斜杠（实测 resolve 会剥掉它，故它不是这条锁的变量）
+        children: [child('c1', `${workRoot}\\`, '5')],
+        lastMtimeMs: 0
+      },
+      {
+        id: 'parent-e-mama',
+        title: '鹅妈妈',
+        children: [
+          {
+            ...child('o1', join(hanzi, '【鹅妈妈】', '惡役千金LV99 - 24'), '24'),
+            parentTitle: '鹅妈妈'
+          }
+        ],
+        lastMtimeMs: 0
+      },
+      {
+        id: 'parent-nordic',
+        title: '北欧美少女',
+        children: [
+          { ...child('o2', join(hanzi, '北欧美少女', '北欧01'), '1'), parentTitle: '北欧美少女' }
+        ],
+        lastMtimeMs: 0
+      }
+    ]
+    repo.getProjectTree.mockImplementation(async () => repo.tree)
+
+    const result = await previewParentSelfCheck(PARENT_ID)
+    const names = result.candidates.map((c) => c.folderName)
+
+    // ── 唯一硬要求（现象）：同级作品不得出现在候选里 ──────────────────
+    expect(names).not.toContain('【鹅妈妈】')
+    expect(names).not.toContain('北欧美少女')
+
+    // 两种都算"用户看到的没问题"，**故意不写死修法形状**：
+    //   ① 推导对了 —— 根落在"卷的父目录"这一层，该报的卷要报出来；
+    //   ② 明确拒绝推导 —— 让人手选一次（B1 口径，见下一条锁）。
+    if (result.canDetect) {
+      expect(names).toContain('老师的人偶6卷')
+    } else {
+      expect(result.candidates).toEqual([])
+      expect(result.message).toContain('手动选择')
+    }
+  })
+})
+
+/**
+ * B1 口径（用户 2026-10-04 拍板）：反推出来的根若是**容器层**，就不自动推导。
+ *
+ * 判据只用一条 —— 「**别的父级的章节出现在这个根下面**」。刻意**不引入**
+ * "像不像章节"的启发式：那类启发式正是本次 bug 的来源（`hasRootProjectFiles`）。
+ *
+ * 用例照着**真实的白沙水族馆**搭：它的子项目路径**本身是对的**（`翻译\白い砂… 12巻`），
+ * 错的只是 `dirname(它)` 落在了**分类层** `翻译` —— 所以 A（录入侧拦截）拦不住这一类，
+ * 必须由 B1 兜住。
+ */
+describe('previewParentSelfCheck — 反推出的根是容器层时（B1 口径）', () => {
+  it('根下面出现别的父级的章节 ⇒ 不自动推导，让人手选一次', async () => {
+    const fanYi = join(work, '翻译')
+    await makeChapterDir(join(fanYi, '白い砂のアクアトープ 12巻'))
+    // 另一部作品的章节落在**分类目录**下面 —— 这正是"翻译 是分类层、不是章节层"的证据
+    await makeChapterDir(join(fanYi, '『喵的』', '圣女老师的魔法出类拔萃！ 02'))
+
+    repo.tree = [
+      {
+        id: PARENT_ID,
+        title: '白沙水族馆',
+        children: [child('c1', join(fanYi, '白い砂のアクアトープ 12巻'), '12')],
+        lastMtimeMs: 0
+      },
+      {
+        id: 'parent-other-work',
+        title: '圣女老师的魔法出类拔萃',
+        children: [
+          {
+            ...child('o1', join(fanYi, '『喵的』', '圣女老师的魔法出类拔萃！ 02'), '2'),
+            parentTitle: '圣女老师的魔法出类拔萃'
+          }
+        ],
+        lastMtimeMs: 0
+      }
+    ]
+    repo.getProjectTree.mockImplementation(async () => repo.tree)
+
+    const result = await previewParentSelfCheck(PARENT_ID)
+
+    expect(result.canDetect).toBe(false)
+    expect(result.candidates).toEqual([])
+    expect(result.message).toContain('手动选择')
+  })
+
+  /**
+   * 跨盘不能连坐（2026-10-04，**真实数据探针抓出来的**）。
+   *
+   * 真实库里有个父级「搬砖」的子项目**全在 E:**，而绝大多数父级在 D:。
+   * `path.relative()` 在跨盘时返回的是**绝对路径**（`E:\…`）而不是 `..\…`：
+   * 实现里若只判 `''` / `'..'` / `'..\'`，跨盘会被判成"在里面"，
+   * 于是**所有 D 盘父级的根**都会被 E 盘那个父级触发而误挡
+   * —— 实测把「鹅妈妈」连同它 8 条**真章节**一起挡掉了。
+   */
+  it('别的父级的章节在另一个盘上时，不算"在根里面"', async () => {
+    const workRoot = join(work, '作品')
+    await makeChapterDir(join(workRoot, '第1話'))
+    await makeChapterDir(join(workRoot, '第2話'))
+
+    repo.tree = [
+      {
+        id: PARENT_ID,
+        title: '本盘的作品',
+        children: [child('c1', join(workRoot, '第1話'), '1')],
+        lastMtimeMs: 0
+      },
+      {
+        id: 'parent-other-drive',
+        title: '外部盘的作品',
+        children: [
+          {
+            ...child('o1', 'Z:\\外部盘\\某作品\\第1話', ''),
+            parentTitle: '外部盘的作品'
+          }
+        ],
+        lastMtimeMs: 0
+      }
+    ]
+    repo.getProjectTree.mockImplementation(async () => repo.tree)
+
+    const result = await previewParentSelfCheck(PARENT_ID)
+
+    // 跨盘不算"在里面" ⇒ 本盘这个父级的根照常可用，该报的话要报出来。
+    expect(result.canDetect).toBe(true)
+    expect(result.candidates.map((c) => c.folderName)).toContain('第2話')
+  })
+})

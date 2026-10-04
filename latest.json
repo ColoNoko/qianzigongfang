@@ -1,7 +1,7 @@
 {
-  "version": "1.0.1",
-  "notes": "设置页改版：关于区换成品牌头卡 + 整宽「检查更新」按钮；「父级自检」「导入旧版数据」并排一行；分组顺序按常用度重排。推荐下载「文件夹版」：解压到单独文件夹后双击「汉化工坊.exe」；升级解压回原文件夹覆盖，data 里的标记不受影响。",
-  "url": "https://gitee.com/Luo-yuan-z/qianzi-gongfang/releases/download/v1.0.1/%E6%B1%89%E5%8C%96%E5%B7%A5%E5%9D%8A-1.0.1-%E6%96%87%E4%BB%B6%E5%A4%B9%E7%89%88.7z",
-  "sha256": "5cfeb9106a5edcf02386da23358f414f4dd6170b271072ab0b79942445548085",
-  "size": 81132336
+  "version": "1.0.2",
+  "notes": "修：刷新并检测新章节会扫到别的作品",
+  "url": "https://gitee.com/Luo-yuan-z/qianzi-gongfang/releases/download/v1.0.2/%E6%B1%89%E5%8C%96%E5%B7%A5%E5%9D%8A-1.0.2-%E6%96%87%E4%BB%B6%E5%A4%B9%E7%89%88.7z",
+  "sha256": "354a7fd750adb14e21ea295fe152a1ba5c2a05f114013776f7121839311f795f",
+  "size": 81132950
 }

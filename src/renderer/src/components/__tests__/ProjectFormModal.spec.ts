@@ -4,6 +4,7 @@ import { mount } from '@vue/test-utils'
 import { nextTick } from 'vue'
 import ProjectFormModal from '../ProjectFormModal.vue'
 import type { StatSnap } from '@shared/ipc-api'
+import type { ParentProject } from '@shared/types'
 
 const VALID_STAT: StatSnap = {
   mtimeMs: 1000,
@@ -17,6 +18,8 @@ function mockComicType(opts?: {
   pickDir?: string | null
   statThrow?: boolean
   statSnap?: StatSnap
+  /** 已登记的项目树 —— `validatePath()` 会读它挡"选到了别的章节的上级目录"（2026-10-04）。 */
+  tree?: ParentProject[]
 }): void {
   const targetWindow = window as unknown as { comicType: unknown }
   targetWindow.comicType = {
@@ -25,7 +28,8 @@ function mockComicType(opts?: {
       opts?.statThrow
         ? Promise.reject(new Error('ENOENT'))
         : Promise.resolve(opts?.statSnap ?? VALID_STAT)
-    )
+    ),
+    projectGetTree: vi.fn(() => Promise.resolve(opts?.tree ?? []))
   }
 }
 
@@ -160,6 +164,9 @@ describe('ProjectFormModal', () => {
     expect((inputs[3].element as HTMLInputElement).value).toBe('vol10')
 
     // Save enabled (path pre-validated ok).
+    // 2026-10-04：校验现在**多读一次项目树**（挡"选到上级目录"），所以要多等一拍。
+    // 断言本身没放松 —— 等的还是"校验完成后保存可用"。
+    await nextTick()
     await nextTick()
     const saveBtn = wrapper.findAll('button').find((b) => b.text() === '保存')!
     expect(saveBtn.attributes('disabled')).toBeUndefined()
@@ -235,5 +242,50 @@ describe('ProjectFormModal', () => {
     await deleteBtn.trigger('click')
     expect(wrapper.emitted('delete')).toBeTruthy()
     expect(wrapper.emitted('delete')!.length).toBe(1)
+  })
+
+  /**
+   * 2026-10-04 现场：把「第6卷」的路径改成了 `…\某作品（米饭`
+   * （= 各卷的**父目录**）。那种路径一进库，"刷新并检测新章节"就会把
+   * **同级作品**当成这一话的新章节报出来（实测 15 条）。
+   * 这里锁的是**录入侧当场拦住**：红字 + 保存禁用，不让它进库。
+   *
+   * ⚠️ 路径一律用中性占位（`D:\漫画库\…`）—— 本文件进**公开仓**，
+   *    审计硬拦真实盘符路径 / 目录名（本文件既有的 fixture 也是这个惯例）。
+   */
+  it('选到别的章节的上级目录 → 红字提示 + 保存禁用', async () => {
+    const container = 'D:\\漫画库\\某作品（米饭'
+    mockComicType({
+      pickDir: container,
+      tree: [
+        {
+          id: 'parent-1',
+          title: '某作品',
+          lastMtimeMs: 0,
+          children: [
+            {
+              id: 'c1',
+              parentTitle: '某作品',
+              chapterNumber: '5',
+              projectTitle: '某作品5卷',
+              folderPath: `${container}\\某作品5卷`,
+              lastMtimeMs: 0
+            }
+          ]
+        }
+      ]
+    })
+    const wrapper = mount(ProjectFormModal, { props: { mode: 'add' } })
+
+    await wrapper
+      .findAll('button')
+      .find((button) => button.text() === '浏览')!
+      .trigger('click')
+    await nextTick()
+    await nextTick()
+
+    expect(wrapper.html()).toContain('上级目录')
+    const saveBtn = wrapper.findAll('button').find((b) => b.text() === '保存')!
+    expect(saveBtn.attributes('disabled')).toBeDefined()
   })
 })
