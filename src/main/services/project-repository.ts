@@ -415,7 +415,7 @@ export async function renameParent(parentId: string, title: string): Promise<voi
  *
  * 规范化在这里**再做一遍**：通道是公开边界，渲染层洗过不代表主进程可以信任
  * （与 `shared/duties.ts` 共用同一份规则，不抄第二份）。空数组的语义是**清空**，
- * 不是"保持上次" —— 清掉字段，别留一个空数组在库里。
+ * 不是"保持上次"；保留空数组，避免重启后被误当成未声明而重新推断。
  *
  * ⚠️ **父级不存在时抛错，不许静默返回**（2026-10-03 审查修复）：
  * 静默返回 = "什么都没改，却报成功"，而渲染层会照旧乐观更新本地状态 ——
@@ -428,8 +428,7 @@ export async function setParentDuties(parentId: string, duties: WorkMode[]): Pro
   await updateProjectTree((projects) => {
     const parent = projects.find((item) => item.id === parentId)
     if (!parent) throw new Error(`父级不存在：${parentId}`)
-    if (clean.length === 0) delete parent.duties
-    else parent.duties = clean
+    parent.duties = clean
   })
 }
 

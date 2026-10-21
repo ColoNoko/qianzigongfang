@@ -15,9 +15,9 @@ function message(wrapper: ReturnType<typeof create>, type: string, extra: Record
   const source = (wrapper.get('[data-testid=guide-frame]').element as HTMLIFrameElement).contentWindow!
   window.dispatchEvent(new MessageEvent('message', { source, data: { channel: 'hanhua-guide-host', type, ...extra } }))
 }
-it('opens the bundled introduction on first entry and reference on a manual open', async () => {
+it('opens the first core lesson on first entry and reference on a manual open', async () => {
   const wrapper = create()
-  expect(wrapper.get('iframe').attributes('src')).toBe('./guide/index.html#quick/welcome')
+  expect(wrapper.get('iframe').attributes('src')).toBe('./guide/index.html#quick/add')
   expect(wrapper.get('iframe').attributes('sandbox')).toBe('allow-scripts')
   await wrapper.setProps({ startWithEntry: true })
   expect(wrapper.get('iframe').attributes('src')).toBe('./guide/index.html#reference/add')

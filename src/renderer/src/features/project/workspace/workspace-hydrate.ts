@@ -107,7 +107,7 @@ function hydrateParents(raw: unknown): ParentProject[] {
       title: p.title,
       sourceRoot: typeof p.sourceRoot === 'string' ? p.sourceRoot : undefined,
       ...(sourceRoots.length > 0 ? { sourceRoots } : {}),
-      ...(duties.length > 0 ? { duties } : {}),
+      ...(p.duties !== undefined ? { duties } : {}),
       lastMtimeMs: p.lastMtimeMs ?? 0,
       children: (p.children ?? []).map((c) => ({
         id: c.id,

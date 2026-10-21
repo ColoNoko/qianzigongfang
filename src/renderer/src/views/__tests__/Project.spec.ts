@@ -30,6 +30,8 @@ vi.mock('vue-router', () => ({
 
 import { getThumbnailService, thumbnailKey } from '@renderer/services/thumbnails'
 import Project from '../Project.vue'
+import WorkModeSegments from '@renderer/components/WorkModeSegments.vue'
+import type { WorkMode } from '@shared/types'
 import SourceRootDialog from '@renderer/features/project/SourceRootDialog.vue'
 import { useProjectWorkspace } from '@renderer/stores/projectWorkspace'
 import { useSettingsStore } from '@renderer/stores/settings'
@@ -68,6 +70,12 @@ function toolbarMarkButton(wrapper: VueWrapper, label: string): DOMWrapper<HTMLB
   const button = wrapper.findAll('button').find((item) => item.text() === label)
   if (!button) throw new Error(`工具栏里找不到按钮「${label}」`)
   return button
+}
+
+/** Current chapter mode has its own control; changing the global default is not a chapter switch. */
+async function selectChapterMode(wrapper: VueWrapper, mode: WorkMode): Promise<void> {
+  wrapper.getComponent(WorkModeSegments).vm.$emit('update:modelValue', mode)
+  await flushPromises()
 }
 
 /** Minimal stubs for child components so tests don't need their deps. */
@@ -207,6 +215,7 @@ beforeEach(() => {
   //（这种开关不清就会串到别的用例上 —— 我第一版忘了复位，当场撞坏 8 条旧锁）。
   editSeqSwitch = false
   setActivePinia(createPinia())
+  useSettingsStore().settingsLoaded = true
   mockPush.mockReset()
   window.comicType = {
     storeGet: vi.fn().mockResolvedValue([]),
@@ -1102,7 +1111,7 @@ describe('Project 标记后下一张', () => {
  * 但**不能变成打扰** —— 同一本里换话、自己手动切走，都不许被拉回来。
  * 纯决策（选哪个模式）在 `shared/__tests__/duties.spec.ts` 里锁着，这里锁"什么时候切"。
  */
-describe('设置控制工作模式', () => {
+describe('职责与当前章节工作模式', () => {
   function mountProject(): VueWrapper {
     return mount(Project, {
       global: {
@@ -1124,7 +1133,7 @@ describe('设置控制工作模式', () => {
     return parents
   }
 
-  it('漫画职责不能覆盖设置中的工作模式', async () => {
+  it('进入章节按职责选择模式，但不覆盖全局默认模式', async () => {
     mockRoute.params = { parentTitle: encodeURIComponent('ドラゴンボール'), childId: 'c1' }
     const store = useProjectWorkspace()
     store.parents = parentsWithDuties(['proofread'])
@@ -1136,8 +1145,9 @@ describe('设置控制工作模式', () => {
     // 对齐要等"这一话扫完"（scanning 落到 false），实测要跨几轮微任务 ⇒ 轮询等待，
     // 别用固定次数的 flush（同一套 setup 会时快时慢，锁会变成抽奖）。
     await vi.waitFor(() => {
-      expect(toolbarMarkButton(wrapper, '标记嵌字')).toBeTruthy()
+      expect(toolbarMarkButton(wrapper, '标记已校对')).toBeTruthy()
     })
+    expect(useSettingsStore().activeWorkMode).toBe('typeset')
     // 提示由应用外壳渲染（不在这棵树里）⇒ 断 toast store 里的那条消息
     const messages = useToastStore()
       .toasts.map((item) => item.message)
@@ -1157,7 +1167,7 @@ describe('设置控制工作模式', () => {
     // 等这一话挂上。原来是等 `mode-stat-typeset` 出现 —— 那枚已删，
     // 改用「工具栏的标记按钮」当就绪信号（同一时刻才可能出现）。
     await vi.waitFor(() => {
-      expect(toolbarMarkButton(wrapper, '标记嵌字')).toBeTruthy()
+      expect(toolbarMarkButton(wrapper, '标记已嵌字')).toBeTruthy()
     })
     expect(
       useToastStore()
@@ -1176,24 +1186,24 @@ describe('设置控制工作模式', () => {
 
     const wrapper = mountProject()
     await vi.waitFor(() => {
-      expect(toolbarMarkButton(wrapper, '标记嵌字')).toBeTruthy()
+      expect(toolbarMarkButton(wrapper, '标记已校对')).toBeTruthy()
     })
 
     // 通过真实分段控件切到监修
-    await useSettingsStore().setActiveWorkMode('supervised')
+    await selectChapterMode(wrapper, 'supervised')
     await flushPromises()
     await nextTick()
-    expect(toolbarMarkButton(wrapper, '标记监修')).toBeTruthy()
+    expect(toolbarMarkButton(wrapper, '标记已监修')).toBeTruthy()
 
     // 窗口重新获得焦点 → 重扫（同一本漫画）→ 模式必须留在用户选的地方
     window.dispatchEvent(new Event('focus'))
     await flushPromises()
     await nextTick()
     await vi.waitFor(() => {
-      expect(toolbarMarkButton(wrapper, '标记监修')).toBeTruthy()
+      expect(toolbarMarkButton(wrapper, '标记已监修')).toBeTruthy()
     })
     // 注意：`toolbarMarkButton` 找不到就抛错，所以"不存在"要用 some() 查（别拿它当返回值判空）
-    expect(wrapper.findAll('button').some((item) => item.text() === '标记校对')).toBe(false)
+    expect(wrapper.findAll('button').some((item) => item.text() === '标记已校对')).toBe(false)
   })
 })
 
@@ -1300,7 +1310,7 @@ describe('Project · 译文对照（P1）：入口是模式驱动', () => {
     await flushPromises()
 
     // 手动切到「翻译」：走真实下拉（不 stub AppSelect）
-    await useSettingsStore().setActiveWorkMode('translated')
+    await selectChapterMode(wrapper, 'translated')
     await flushPromises()
     await nextTick()
 
@@ -1419,7 +1429,7 @@ describe('Project · 译文栏第 2 批：档位联动 与 校对记录', () => 
     await flushPromises()
     await wrapper.get('.thumb-open-second').trigger('click')
     await flushPromises()
-    await useSettingsStore().setActiveWorkMode(mode)
+    await selectChapterMode(wrapper, mode)
     await flushPromises()
     await nextTick()
   }
@@ -1460,9 +1470,9 @@ describe('Project · 译文栏第 2 批：档位联动 与 校对记录', () => 
     expect(model(wrapper).mode).toBe('translate')
 
     // 再切一次工序：不该被重新拽回校对档
-    await useSettingsStore().setActiveWorkMode('translated')
+    await selectChapterMode(wrapper, 'translated')
     await flushPromises()
-    await useSettingsStore().setActiveWorkMode('proofread')
+    await selectChapterMode(wrapper, 'proofread')
     await flushPromises()
     expect(model(wrapper).mode).toBe('translate')
   })
@@ -1644,7 +1654,7 @@ describe('Project · 译文栏第 3 批：另存一份译文', () => {
     await flushPromises()
     await wrapper.get('.thumb-open-second').trigger('click')
     await flushPromises()
-    await useSettingsStore().setActiveWorkMode('translated')
+    await selectChapterMode(wrapper, 'translated')
     await flushPromises()
     await nextTick()
   }
@@ -1857,7 +1867,7 @@ describe('Project · 译文栏第 4 批：校对反悔这条路', () => {
     await flushPromises()
     await wrapper.get('.thumb-open-second').trigger('click')
     await flushPromises()
-    await useSettingsStore().setActiveWorkMode('translated')
+    await selectChapterMode(wrapper, 'translated')
     await flushPromises()
     await nextTick()
   }
@@ -2067,7 +2077,7 @@ describe('Project · 回退最近一次保存：Ctrl+Z 连退链', () => {
     await flushPromises()
     await wrapper.get('.thumb-open-second').trigger('click')
     await flushPromises()
-    await useSettingsStore().setActiveWorkMode('translated')
+    await selectChapterMode(wrapper, 'translated')
     await flushPromises()
     await nextTick()
   }
@@ -2288,7 +2298,7 @@ describe('Project · 译文栏第 5 批：新增框（页面接线）', () => {
     await flushPromises()
     await wrapper.get('.thumb-open-second').trigger('click')
     await flushPromises()
-    await useSettingsStore().setActiveWorkMode('translated')
+    await selectChapterMode(wrapper, 'translated')
     await flushPromises()
     await nextTick()
   }
@@ -2674,7 +2684,7 @@ describe('Project · 译文栏第 5 批 5e：删除译文（宿主接线）', ()
     await flushPromises()
     await wrapper.get('.thumb-open-second').trigger('click')
     await flushPromises()
-    await useSettingsStore().setActiveWorkMode('translated')
+    await selectChapterMode(wrapper, 'translated')
     await flushPromises()
     await nextTick()
   }

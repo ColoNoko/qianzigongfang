@@ -1,11 +1,22 @@
-import { normalizeDuties } from '@shared/duties'
+import { normalizeDuties, pickChapterDutyMode, pickParentDutyMode } from '@shared/duties'
 import { defineStore } from 'pinia'
-import type { ParentProject } from '@shared/types'
+import type { ChildProject, ParentProject } from '@shared/types'
 import { WORK_MODES } from '@shared/modes'
 import type { WorkMode } from '@shared/types'
 import { useToastStore } from './toast'
 
 export const WORK_MODES_STORAGE_KEY = 'ui.workModes'
+export const PROJECT_WORK_MODES_STORAGE_KEY = 'ui.projectWorkModes'
+// Keep IPC writes ordered; promises do not belong in Pinia's serializable state.
+const projectModeWrites = new WeakMap<object, Promise<void>>()
+let projectModeRequest = 0
+
+export function normalizeProjectWorkModes(value: unknown): Record<string, WorkMode> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {}
+  return Object.fromEntries(Object.entries(value).filter(([id, mode]) =>
+    id.length > 0 && WORK_MODES.includes(mode as WorkMode)
+  ))
+}
 export function normalizeEnabledModes(value: unknown): WorkMode[] {
   const modes = WORK_MODES.filter((mode) => Array.isArray(value) && value.includes(mode))
   return modes.length ? modes : [...WORK_MODES]
@@ -147,8 +158,10 @@ export const useSettingsStore = defineStore('settings', {
     enabledWorkModes: [...WORK_MODES] as WorkMode[],
     defaultImportDuties: ['typeset'] as WorkMode[],
     dutyModePriority: 'slower' as 'slower' | 'faster',
+    /** Entry default for unassigned works, separate from each open chapter's mode. */
     activeWorkMode: 'typeset' as WorkMode,
     projectWorkModes: {} as Record<string, WorkMode>,
+    pendingProjectWorkModes: {} as Record<string, { mode: WorkMode; request: number }>,
     savingWorkModes: false,
     thumbSize: DEFAULT_SIZE as ThumbSize,
     childSortOrder: DEFAULT_SORT_ORDER as ChildSortOrder,
@@ -245,16 +258,40 @@ export const useSettingsStore = defineStore('settings', {
   },
 
   actions: {
-    modeForProject(parent: ParentProject, duties = parent.duties ?? []): WorkMode {
-      const remembered = this.projectWorkModes[parent.id]
-      const available = duties.filter(mode => this.enabledWorkModes.includes(mode))
-      if (remembered && this.enabledWorkModes.includes(remembered) && (!available.length || available.includes(remembered))) return remembered
-      return this.activeWorkMode
+    modeForProject(parent: ParentProject, duties = parent.duties ?? [], child?: ChildProject): WorkMode {
+      const available = normalizeDuties(duties).filter(mode => this.enabledWorkModes.includes(mode))
+      const fallback = this.enabledWorkModes.includes(this.activeWorkMode)
+        ? this.activeWorkMode : this.enabledWorkModes[0]
+      // Explicitly unassigned works follow the default, not an old saved role.
+      if (!available.length) return fallback
+      const remembered = this.pendingProjectWorkModes[parent.id]?.mode ?? this.projectWorkModes[parent.id]
+      if (available.includes(remembered)) return remembered
+      return (child
+        ? pickChapterDutyMode(child, available, this.dutyModePriority)
+        : pickParentDutyMode(parent, available, this.dutyModePriority)) ?? fallback
     },
     async setProjectWorkMode(parentId: string, mode: WorkMode): Promise<void> {
       if (!parentId || !this.enabledWorkModes.includes(mode)) return
-      this.projectWorkModes = { ...this.projectWorkModes, [parentId]: mode }
-
+      const request = ++projectModeRequest
+      this.pendingProjectWorkModes = { ...this.pendingProjectWorkModes, [parentId]: { mode, request } }
+      const write = (projectModeWrites.get(this) ?? Promise.resolve()).then(async () => {
+        try {
+          if (!this.enabledWorkModes.includes(mode) || this.projectWorkModes[parentId] === mode) return
+          const next = { ...this.projectWorkModes, [parentId]: mode }
+          await window.comicType.storeSet(PROJECT_WORK_MODES_STORAGE_KEY, next)
+          this.projectWorkModes = next
+        } catch {
+          useToastStore().addToast({ type: 'error', message: '漫画工作模式保存失败，请重试' })
+        } finally {
+          if (this.pendingProjectWorkModes[parentId]?.request === request) {
+            const pending = { ...this.pendingProjectWorkModes }
+            delete pending[parentId]
+            this.pendingProjectWorkModes = pending
+          }
+        }
+      })
+      projectModeWrites.set(this, write)
+      await write
     },
     async setStartupPage(page: 'home' | 'project'): Promise<void> {
       if (this.savingStartupPage || !['home', 'project'].includes(page)) return
@@ -293,7 +330,6 @@ export const useSettingsStore = defineStore('settings', {
         await window.comicType.storeSet(WORK_MODES_STORAGE_KEY, { enabled: modes, active: selected })
         this.enabledWorkModes = modes
         this.activeWorkMode = selected
-        this.projectWorkModes = {}
       } catch {
         useToastStore().addToast({ type: 'error', message: '工作模式保存失败，请重试' })
       } finally {
@@ -302,7 +338,7 @@ export const useSettingsStore = defineStore('settings', {
     },
     async setActiveWorkMode(mode: WorkMode): Promise<void> {
       if (!WORK_MODES.includes(mode)) return
-      if (mode === this.activeWorkMode) { this.projectWorkModes = {}; return }
+      if (mode === this.activeWorkMode) return
       await this.saveWorkModes(this.enabledWorkModes, mode)
     },
     setAutoIncrementalScan(enabled: boolean): void {
@@ -450,6 +486,7 @@ export const useSettingsStore = defineStore('settings', {
           rawProgressSort,
           rawAutoIncrementalScan,
           rawWorkModes,
+          rawProjectWorkModes,
           rawViewerSplitWidth,
           rawInvertWheel,
           rawHomeStyle,
@@ -471,6 +508,7 @@ export const useSettingsStore = defineStore('settings', {
           window.comicType.storeGet(PROGRESS_SORT_STORAGE_KEY),
           window.comicType.storeGet(AUTO_INCREMENTAL_SCAN_STORAGE_KEY),
           window.comicType.storeGet(WORK_MODES_STORAGE_KEY),
+          window.comicType.storeGet(PROJECT_WORK_MODES_STORAGE_KEY),
           window.comicType.storeGet(VIEWER_SPLIT_WIDTH_STORAGE_KEY),
           window.comicType.storeGet('ui.invertWheel'),
           window.comicType.storeGet('ui.homeStyle'),
@@ -484,8 +522,8 @@ export const useSettingsStore = defineStore('settings', {
         this.invertWheel = rawInvertWheel === true
         this.thumbSize = isValidSize(rawThumbSize) ? rawThumbSize : DEFAULT_SIZE
         const workModes = rawWorkModes as { enabled?: unknown; active?: WorkMode } | null
-        this.enabledWorkModes = [...WORK_MODES]
-        this.projectWorkModes = {}
+        this.enabledWorkModes = normalizeEnabledModes(workModes?.enabled)
+        this.projectWorkModes = normalizeProjectWorkModes(rawProjectWorkModes)
         const dutyDefaults = await window.comicType.storeGet('ui.importDuties') as { duties?: WorkMode[]; priority?: string } | null
         this.defaultImportDuties = normalizeDuties(dutyDefaults?.duties ?? (workModes?.enabled ?? ['typeset']))
         this.dutyModePriority = dutyDefaults?.priority === 'faster' ? 'faster' : 'slower'

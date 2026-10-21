@@ -493,13 +493,13 @@ describe('settings · 对照视图译文态分栏宽度', () => {
   })
 })
 
-it('migrates enabled modes to import duties while keeping every work mode available', async () => {
+it('migrates import duty defaults without re-enabling disabled work modes', async () => {
   setActivePinia(createPinia())
   mockComicType(vi.fn(async key => key === 'ui.workModes' ? {enabled:['proofread'],active:'proofread'} : undefined))
   const store = useSettingsStore()
   await store.loadSettings()
   expect(store.defaultImportDuties).toEqual(['proofread'])
-  expect(store.enabledWorkModes).toHaveLength(4)
+  expect(store.enabledWorkModes).toEqual(['proofread'])
   await store.saveImportDuties(['translated','supervised'],'faster')
   expect(store.activeWorkMode).toBe('proofread')
   expect(window.comicType.storeSet).toHaveBeenCalledWith('ui.importDuties',{duties:['translated','supervised'],priority:'faster'})
@@ -531,34 +531,87 @@ describe('homepage preference', () => {
 
 
 describe('per-comic work mode', () => {
-  it('uses global mode first, keeps temporary comic overrides isolated, and resets them on global choice or reload', async () => {
+  function persistentSettings() {
     const values = new Map<string, unknown>()
     mockComicType(vi.fn(async (key: string) => values.get(key)))
     vi.mocked(window.comicType.storeSet).mockImplementation(async (key, value) => { values.set(key, structuredClone(value)) })
+    return values
+  }
+
+  const parent = (id: string, duties: import('@shared/types').WorkMode[]) =>
+    ({ id, duties, children: [] } as unknown as import('@shared/types').ParentProject)
+
+  it('keeps work choices isolated through default changes and reload', async () => {
+    const values = persistentSettings()
     const store = useSettingsStore()
     await store.loadSettings()
-    const a = { id: 'a', duties: ['translated', 'proofread'], children: [] } as unknown as import('@shared/types').ParentProject
-    const b = { id: 'b', duties: ['typeset'], children: [] } as unknown as import('@shared/types').ParentProject
+    const a = parent('a', ['translated', 'proofread'])
+    const b = parent('b', ['typeset'])
     await store.setProjectWorkMode(a.id, 'proofread')
     await store.setProjectWorkMode(b.id, 'typeset')
+    await store.setActiveWorkMode('translated')
+    await store.setActiveWorkMode('translated')
     expect(store.modeForProject(a)).toBe('proofread')
     expect(store.modeForProject(b)).toBe('typeset')
-    expect(store.activeWorkMode).toBe('typeset')
-    await store.setActiveWorkMode('translated')
-    expect(store.modeForProject(a)).toBe('translated')
-    expect(store.modeForProject(b)).toBe('translated')
-    await store.setProjectWorkMode(a.id, 'proofread')
-    await store.setActiveWorkMode('translated')
-    expect(store.modeForProject(a)).toBe('translated')
-    await store.setActiveWorkMode('typeset')
-    expect(values.has('ui.projectWorkModes')).toBe(false)
-    values.set('ui.projectWorkModes', {a:'proofread'})
+    expect(values.get('ui.projectWorkModes')).toEqual({ a: 'proofread', b: 'typeset' })
     setActivePinia(createPinia())
     const restored = useSettingsStore()
     await restored.loadSettings()
-    expect(restored.modeForProject(a)).toBe('typeset')
+    expect(restored.modeForProject(a)).toBe('proofread')
     expect(restored.modeForProject(b)).toBe('typeset')
     await restored.setProjectWorkMode(a.id, 'translated')
     expect(restored.modeForProject(b)).toBe('typeset')
+  })
+
+  it('ignores historical choices for empty duties and invalid or disabled roles', async () => {
+    const values = persistentSettings()
+    values.set('ui.workModes', { enabled: ['translated', 'proofread'], active: 'translated' })
+    values.set('ui.projectWorkModes', { cleared: 'proofread', disabled: 'supervised', changed: 'typeset', junk: 'invalid' })
+    const store = useSettingsStore()
+    await store.loadSettings()
+    expect(store.enabledWorkModes).toEqual(['translated', 'proofread'])
+    expect(store.projectWorkModes.junk).toBeUndefined()
+    expect(store.modeForProject(parent('cleared', []))).toBe('translated')
+    expect(store.modeForProject(parent('disabled', ['supervised', 'proofread']))).toBe('proofread')
+    expect(store.modeForProject(parent('changed', ['proofread']))).toBe('proofread')
+    await store.setProjectWorkMode('disabled', 'supervised')
+    expect(window.comicType.storeSet).not.toHaveBeenCalled()
+    expect(store.projectWorkModes.disabled).toBe('supervised')
+  })
+
+  it('serializes simultaneous writes without losing another work or the newest choice', async () => {
+    const values = persistentSettings()
+    const store = useSettingsStore()
+    await store.loadSettings()
+    let finish!: () => void
+    vi.mocked(window.comicType.storeSet).mockImplementationOnce(async (key, value) => {
+      await new Promise<void>(resolve => { finish = resolve })
+      values.set(key, structuredClone(value))
+    })
+    const first = store.setProjectWorkMode('a', 'proofread')
+    const second = store.setProjectWorkMode('b', 'supervised')
+    const third = store.setProjectWorkMode('a', 'translated')
+    expect(store.modeForProject(parent('a', ['translated', 'proofread']))).toBe('translated')
+    await vi.waitFor(() => expect(finish).toBeTypeOf('function'))
+    expect(window.comicType.storeSet).toHaveBeenCalledTimes(1)
+    finish()
+    await Promise.all([first, second, third])
+    expect(values.get('ui.projectWorkModes')).toEqual({ a: 'translated', b: 'supervised' })
+    expect(store.projectWorkModes).toEqual(values.get('ui.projectWorkModes'))
+    expect(store.pendingProjectWorkModes).toEqual({})
+  })
+
+  it('a failed save retains durable choices, shows an error, and does not block later saves', async () => {
+    const values = persistentSettings()
+    values.set('ui.projectWorkModes', { a: 'translated' })
+    const store = useSettingsStore()
+    await store.loadSettings()
+    vi.mocked(window.comicType.storeSet).mockRejectedValueOnce(new Error('disk full'))
+    await Promise.all([store.setProjectWorkMode('a', 'proofread'), store.setProjectWorkMode('b', 'supervised')])
+    expect(store.projectWorkModes).toEqual({ a: 'translated', b: 'supervised' })
+    expect(values.get('ui.projectWorkModes')).toEqual(store.projectWorkModes)
+    expect(store.pendingProjectWorkModes).toEqual({})
+    const { useToastStore } = await import('../toast')
+    expect(useToastStore().toasts.at(-1)?.message).toContain('漫画工作模式保存失败')
   })
 })

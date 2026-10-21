@@ -1,6 +1,6 @@
 import { computed, onMounted, type ComputedRef } from 'vue'
 import type { WorkMode } from '@shared/types'
-import { inferParentDuties } from '@shared/duties'
+import { inferParentDuties, normalizeDuties } from '@shared/duties'
 import { useProjectWorkspace } from '@renderer/stores/projectWorkspace'
 import { useSettingsStore } from '@renderer/stores/settings'
 import { useAchievementsStore } from '@renderer/stores/achievements'
@@ -20,6 +20,7 @@ export function useParentDuties(): {
   dutyMap: ComputedRef<Record<string, WorkMode[]>>
   modeMap: ComputedRef<Record<string, WorkMode>>
   dutiesOf: (parentId: string) => WorkMode[]
+  dutiesReady: (parentId: string) => boolean
 } {
   const workspace = useProjectWorkspace()
   const achievements = useAchievementsStore()
@@ -42,8 +43,8 @@ export function useParentDuties(): {
 
     const result: Record<string, WorkMode[]> = {}
     for (const parent of workspace.parents) {
-      if (parent.duties && parent.duties.length > 0) {
-        result[parent.id] = parent.duties
+      if (parent.duties !== undefined) {
+        result[parent.id] = normalizeDuties(parent.duties)
         continue
       }
       result[parent.id] = inferParentDuties(
@@ -57,7 +58,11 @@ export function useParentDuties(): {
     return dutyMap.value[parentId] ?? []
   }
 
+  function dutiesReady(parentId: string): boolean {
+    return workspace.parents.find(parent => parent.id === parentId)?.duties !== undefined || achievements.loaded
+  }
+
   const settings = useSettingsStore()
   const modeMap = computed(() => Object.fromEntries(workspace.parents.map(parent => [parent.id, settings.modeForProject(parent, dutyMap.value[parent.id])])) as Record<string, WorkMode>)
-  return { dutyMap, modeMap, dutiesOf }
+  return { dutyMap, modeMap, dutiesOf, dutiesReady }
 }

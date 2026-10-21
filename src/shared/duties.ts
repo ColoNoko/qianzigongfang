@@ -1,12 +1,12 @@
 import { childModeProgress } from './status'
-import type { ParentProject, WorkMode } from './types'
+import type { ChildProject, ParentProject, WorkMode } from './types'
 import { WORK_MODES } from './modes'
 
 /**
  * 「职责」的纯规则（2026-10-03）。
  *
  * 职责 = **这一本漫画归我干哪道工序**（可挂 1~2 个模式）。它与"模式"不是一回事：
- * 模式是"我现在手上在做哪道工序"（全局一个下拉），职责是"这本归我做什么"（每本一份）。
+ * 模式是"当前章节正在做哪道工序"，职责是"这本归我做什么"（每本一份）。
  *
  * 为什么单独一个模块：规则（最多两个、规范顺序、推断只给一个）要能脱离 DOM 单测；
  * 组件只负责画标签与发事件。`inferParentDuties` 的语料全部来自真实库（见 spec）。
@@ -50,7 +50,7 @@ export function toggleDuty(current: readonly WorkMode[], mode: WorkMode): WorkMo
  *
  * 两个职责时选**完成度更低**的那道（手上还有活的那个）；一样低（例如都还没开始）
  * 就按规范顺序取第一个 —— 结果必须稳定，否则"每次进来切到的不一样"最讨嫌。
- * 没有职责 → null：调用方保持现状，不许自己猜一个。
+ * 没有职责 → null：进章时由调用方使用无职责作品的全局默认。
  */
 export function pickDutyMode(
   duties: readonly WorkMode[],
@@ -116,5 +116,15 @@ export function pickParentDutyMode(parent: ParentProject, duties: readonly WorkM
     const value = childModeProgress(child, mode)
     return { done: sum.done + value.done, total: sum.total + value.total }
   }, { done: 0, total: 0 })]))
+  return pickDutyMode(duties, progress, priority)
+}
+
+/** Chapter entry uses this chapter's progress, not another chapter's aggregate. */
+export function pickChapterDutyMode(
+  child: ChildProject,
+  duties: readonly WorkMode[],
+  priority: 'slower' | 'faster' = 'slower'
+): WorkMode | null {
+  const progress = Object.fromEntries(WORK_MODES.map(mode => [mode, childModeProgress(child, mode)]))
   return pickDutyMode(duties, progress, priority)
 }

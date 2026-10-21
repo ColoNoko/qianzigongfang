@@ -147,7 +147,7 @@ describe('加载时保留职责', () => {
     expect(projectStore.projects[0].duties).toEqual(['proofread'])
   })
 
-  it('垃圾值 / 重复 / 超过两个都被洗掉；一个都没有时是 undefined（不是空数组）', async () => {
+  it('垃圾值 / 重复 / 超过两个都被洗掉，显式空职责保持为空', async () => {
     window.comicType.projectGetTree = vi
       .fn()
       .mockResolvedValue(
@@ -162,8 +162,25 @@ describe('加载时保留职责', () => {
     window.comicType.projectGetTree = vi.fn().mockResolvedValue(treeWith({ duties: [] }))
     const empty = useProjectWorkspace()
     await empty.loadParents()
-    expect(empty.parents[0].duties).toBeUndefined()
+    expect(empty.parents[0].duties).toEqual([])
   })
+
+  it.each([
+    ['absent historical field', {}, undefined],
+    ['explicit empty duties', { duties: [] }, []],
+    ['explicit invalid duties', { duties: ['invalid', 42] }, []]
+  ])('both loading paths distinguish %s without inferring or dropping declarations', async (_label, fields, expected) => {
+    window.comicType.projectGetTree = vi.fn().mockResolvedValue(treeWith(fields as Record<string, unknown>))
+    const workspace = useProjectWorkspace()
+    const projectStore = useProjectStore()
+    await workspace.loadParents()
+    await projectStore.loadProjects()
+    for (const parent of [workspace.parents[0], projectStore.projects[0]]) {
+      expect(parent.duties).toEqual(expected)
+      expect('duties' in parent).toBe(expected !== undefined)
+    }
+  })
+
 })
 
 /**

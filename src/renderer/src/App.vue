@@ -333,13 +333,15 @@ watch(
       <div class="mt-auto" />
       <Popover v-if="settings.enabledWorkModes.length > 1">
         <PopoverTrigger as-child>
-          <UiButton variant="ghost" size="sm" class="h-16 w-full shrink-0 flex-col gap-1.5 rounded-none px-0 [&_svg]:size-6" data-testid="work-mode-open" aria-label="切换工作模式">
+          <UiButton variant="ghost" size="sm" class="h-16 w-full shrink-0 flex-col gap-1.5 rounded-none px-0 [&_svg]:size-6" data-testid="work-mode-open" aria-label="切换默认工作模式" title="默认模式，不修改各作品职责">
             <NavigationIcon name="mode" />
-            <span class="text-[11px] leading-none">模式</span>
+            <span class="text-[11px] leading-none">默认模式</span>
           </UiButton>
         </PopoverTrigger>
         <PopoverContent side="right" align="end" class="w-auto p-2" data-testid="work-mode-menu">
-          <WorkModeSegments :model-value="selectedWorkMode" reselect :modes="settings.enabledWorkModes" :disabled="settings.savingWorkModes" @update:model-value="selectWorkMode" />
+          <p class="mb-2 text-xs font-medium text-text-primary">默认工作模式</p>
+          <WorkModeSegments label="默认工作模式" :model-value="selectedWorkMode" reselect :modes="settings.enabledWorkModes" :disabled="settings.savingWorkModes" @update:model-value="selectWorkMode" />
+          <p class="mt-2 max-w-64 text-[11px] leading-relaxed text-text-tertiary">未设职责的作品进入章节时使用此模式；已有职责与当前章节手动选择不受影响。</p>
         </PopoverContent>
       </Popover>
       <!-- 指引：随时重看新手引导。样式与下面那个昼夜按钮同一套（同样的 h-16、

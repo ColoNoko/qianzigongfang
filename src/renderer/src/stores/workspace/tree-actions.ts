@@ -57,12 +57,6 @@ export const treeActions = {
     }
     this.parents = this.parents.map((parent) => {
       if (parent.id !== parentId) return parent
-      if (clean.length === 0) {
-        // 显式 delete（不是解构丢弃）：解构会留一个未使用的变量，eslint 会多一条 warning
-        const next = { ...parent }
-        delete next.duties
-        return next
-      }
       return { ...parent, duties: clean }
     })
     syncDashboardStore(this.parents)

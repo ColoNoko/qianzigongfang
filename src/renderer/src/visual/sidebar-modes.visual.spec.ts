@@ -89,7 +89,7 @@ async function renderSidebar(
   }
   if (dutyMenu) {
     // 展开职责菜单：它必须压在下面的子行之上（现场：以前被后面的行盖住）
-    await wrapper.findAll('[data-testid="parent-duty-chip"]')[0].trigger('click')
+    await wrapper.findAll('[data-testid="parent-duty-pill"]')[0].trigger('click')
   }
   const html = wrapper.html()
   wrapper.unmount()

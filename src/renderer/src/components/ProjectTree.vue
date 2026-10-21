@@ -1,13 +1,11 @@
 <script setup lang="ts">
 import { ChevronRight, MoreHorizontal, ArrowUp, ArrowDown } from 'lucide-vue-next'
-import { pickParentDutyMode } from '@shared/duties'
 import StatisticsTimeMenu from '@renderer/features/project/StatisticsTimeMenu.vue'
 import { ContextMenu, ContextMenuTrigger, ContextMenuContent, ContextMenuItem } from './ui/context-menu'
-import { ToggleGroup, ToggleGroupItem } from './ui/toggle-group'
 import { Checkbox } from './ui/checkbox'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuGroup, DropdownMenuItem } from './ui/dropdown-menu'
 import { Progress } from './ui/progress'
-import { Popover, PopoverContent, PopoverTrigger, PopoverAnchor } from "./ui/popover"
+import { Popover, PopoverContent, PopoverTrigger } from "./ui/popover"
 import { Button as UiButton } from '@renderer/components/ui/button'
 import UiInput from '@renderer/components/ui/ControlInput.vue'
 // ProjectTree — presentational parent/child tree (漫画 → 集).
@@ -61,7 +59,7 @@ const props = withDefaults(
      */
     stickyParentHeader?: boolean
     /**
-     * 每本漫画的「职责」（这一本归我干哪几道工序，1~2 个模式），键是父级 id。
+     * 每本漫画的「职责」（这一本归我干哪几道工序，0~2 个模式），键是父级 id。
      *
      * 由宿主算好传进来（`useParentDuties()`：声明过的优先，没声明过按已有标记推断）——
      * 组件不认识"推断"，只负责画。缺省 / 空数组 = 只占位、不画标签。
@@ -205,13 +203,9 @@ function isExpanded(id: string): boolean {
 
 function toggleExpandOnly(parent: ParentProject): void {
   const next = !isExpanded(parent.id)
-  if (next) {
-    expandedIds.value.add(parent.id)
-    if (!props.multiSelect) {
-      const mode = pickParentDutyMode(parent, dutiesOf(parent.id), props.dutyModePriority)
-      if (mode && !props.parentModes?.[parent.id]) emit('switchMode', parent.id, mode)
-    }
-  }
+  // Expanding the tree only reveals chapters. Mode selection belongs to the
+  // host's chapter-entry flow, not a presentational disclosure control.
+  if (next) expandedIds.value.add(parent.id)
   else expandedIds.value.delete(parent.id)
   expandedIds.value = new Set(expandedIds.value)
   emit('expand', parent.id, next)
@@ -409,16 +403,18 @@ watch(
             <strong v-else :title="parent.title">{{ parent.title }}</strong>
             <div class="comic-meta"><span>{{ parent.children.length }} 话</span>
               <div data-testid="parent-duty-slot" @click.stop @dblclick.stop>
-                <Popover :open="dutyMenuParentId === parent.id" @update:open="$event ? toggleDutyMenu(parent.id) : closeDutyMenu()">
-                  <PopoverAnchor as-child><div @contextmenu.prevent.stop="toggleDutyMenu(parent.id)">
-                    <ToggleGroup v-if="dutiesOf(parent.id).length" type="single" :model-value="modeOf(parent)" size="sm" variant="outline" class="role-labels" data-testid="parent-duty-pill" aria-label="漫画职责快捷切换" @update:model-value="value => { if (value && enabledModes.includes(value as WorkMode)) emit('switchMode', parent.id, value as WorkMode) }">
-                      <ToggleGroupItem v-for="dutyMode in dutiesOf(parent.id)" :key="dutyMode" :value="dutyMode" :disabled="!enabledModes.includes(dutyMode)" class="role-label" :data-testid="'parent-duty-' + dutyMode" :title="'切换到' + WORK_MODE_LABELS[dutyMode]">{{ WORK_MODE_LABELS[dutyMode] }}</ToggleGroupItem>
-                    </ToggleGroup>
-                    <PopoverTrigger v-else as-child><UiButton variant="ghost" size="sm" class="h-5 px-1 text-[10px]" data-testid="parent-duty-chip" :data-duty-count="0" :aria-label="dutyLabel(parent)">设置职责</UiButton></PopoverTrigger>
-                  </div></PopoverAnchor>
-                  <PopoverContent align="start" class="w-40 p-1" role="menu" data-testid="parent-duty-menu" @keydown="onDutyKeydown">
-                    <UiButton v-for="option in WORK_MODES" :key="option" variant="ghost" size="sm" role="menuitemcheckbox" class="flex w-full justify-start gap-2" :disabled="isDutyOptionDisabled(parent.id, option)" :aria-checked="dutiesOf(parent.id).includes(option)" :data-testid="`parent-duty-option-${option}`" @click.stop="onDutyOption(parent.id, option)">{{ WORK_MODE_LABELS[option] }}<span v-if="dutiesOf(parent.id).includes(option)" class="ml-auto">✓</span></UiButton>
-                    <p class="px-2 py-1 text-[10px] text-text-tertiary">最多 {{ MAX_PARENT_DUTIES }} 个</p>
+                <Popover :open="dutyMenuParentId === parent.id" @update:open="dutyMenuParentId = $event ? parent.id : null">
+                  <PopoverTrigger as-child>
+                    <UiButton v-if="dutiesOf(parent.id).length" variant="ghost" size="sm" class="role-labels" data-testid="parent-duty-pill" :data-duty-count="dutiesOf(parent.id).length" :aria-label="dutyLabel(parent)" :title="dutyLabel(parent)" @contextmenu.prevent.stop="toggleDutyMenu(parent.id)">
+                      <span v-for="dutyMode in dutiesOf(parent.id)" :key="dutyMode" class="role-label" :data-duty-mode="dutyMode" :data-testid="'parent-duty-' + dutyMode">{{ WORK_MODE_LABELS[dutyMode] }}</span>
+                    </UiButton>
+                    <UiButton v-else variant="ghost" size="sm" class="empty-duty" data-testid="parent-duty-chip" :data-duty-count="0" :aria-label="dutyLabel(parent)" @contextmenu.prevent.stop="toggleDutyMenu(parent.id)">设置职责</UiButton>
+                  </PopoverTrigger>
+                  <PopoverContent align="start" class="w-44 p-1" :aria-label="parent.title + '的职责设置'" data-testid="parent-duty-menu" @keydown="onDutyKeydown">
+                    <div role="group" aria-label="我负责的职责，最多选择两个">
+                      <UiButton v-for="option in WORK_MODES" :key="option" variant="ghost" size="sm" class="flex w-full justify-start gap-2" :disabled="isDutyOptionDisabled(parent.id, option)" :aria-pressed="dutiesOf(parent.id).includes(option)" :data-testid="`parent-duty-option-${option}`" @click.stop="onDutyOption(parent.id, option)">{{ WORK_MODE_LABELS[option] }}<span v-if="dutiesOf(parent.id).includes(option)" aria-hidden="true" class="ml-auto">✓</span></UiButton>
+                    </div>
+                    <p class="px-2 py-1 text-[11px] text-text-tertiary">作品职责，最多 {{ MAX_PARENT_DUTIES }} 个；不会切换当前模式。</p>
                   </PopoverContent>
                 </Popover>
               </div>
@@ -442,12 +438,12 @@ watch(
       </ContextMenuTrigger><ContextMenuContent v-if="!multiSelect"><ContextMenuItem @select="toggleDutyMenu(parent.id)">修改职责</ContextMenuItem><StatisticsTimeMenu :target="{ parentId: parent.id }" :mode="modeOf(parent)" /></ContextMenuContent></ContextMenu>
       <div v-if="isExpanded(parent.id)" class="chapters" data-testid="child-list">
         <ContextMenu v-for="child in sortedChildren(parent)" :key="child.id"><ContextMenuTrigger as-child :disabled="multiSelect">
-          <div :data-child-id="child.id" :aria-current="child.id === activeChildId ? 'true' : undefined" class="chapter-row cursor-pointer" :class="[stickyParentHeader ? 'scroll-mt-[65px]' : '', isChildMarked(child.id) ? 'selected bg-selected-bg' : child.id === activeChildId ? 'active' : '']" @click="selectChild(parent, child, $event)">
+          <div :data-child-id="child.id" :aria-current="child.id === activeChildId ? 'true' : undefined" class="chapter-row cursor-pointer" :class="[multiSelect ? 'is-multi-select' : '', stickyParentHeader ? 'scroll-mt-[80px]' : '', isChildMarked(child.id) ? 'selected bg-selected-bg' : child.id === activeChildId ? 'active' : '']" @click="selectChild(parent, child, $event)">
             <Checkbox v-if="multiSelect" :model-value="isChildMarked(child.id)" :aria-label="'选择章节 ' + child.projectTitle" @click.stop="toggleChildFromCheckbox(child.id, $event)" />
-            <button class="chapter-main" @click.stop="selectChild(parent, child, $event)">
+            <UiButton variant="ghost" class="chapter-main" :aria-label="formatChapterNumber(child.chapterNumber) + ' · ' + child.projectTitle + '，' + progressText(child)" @click.stop="selectChild(parent, child, $event)">
               <span :title="formatChapterNumber(child.chapterNumber) + ' · ' + child.projectTitle">{{ formatChapterNumber(child.chapterNumber) }} · {{ child.projectTitle }}</span>
-              <span class="chapter-progress"><small :title="progressText(child)"><span class="progress-mode">{{ WORK_MODE_LABELS[childMode(child)] }}进度</span>{{ childModeProgress(child, childMode(child)).done }}/{{ childModeProgress(child, childMode(child)).total }}</small><Progress :model-value="Number.parseFloat(progressWidth(child))" class="h-1 w-10" aria-hidden="true" /></span>
-            </button>
+            </UiButton>
+            <span class="chapter-progress" :title="progressText(child)" aria-hidden="true"><small><span class="progress-mode">{{ WORK_MODE_LABELS[childMode(child)] }}进度</span><span class="progress-count">{{ childModeProgress(child, childMode(child)).done }}/{{ childModeProgress(child, childMode(child)).total }}</span></small><Progress :model-value="Number.parseFloat(progressWidth(child))" class="chapter-progress-bar" /></span>
             <DropdownMenu v-if="!multiSelect"><DropdownMenuTrigger as-child><UiButton variant="ghost" size="icon-sm" class="chapter-actions" :aria-label="child.projectTitle + '章节操作'" @click.stop><MoreHorizontal/></UiButton></DropdownMenuTrigger>
               <DropdownMenuContent align="end" :side-offset="4" @click.stop><DropdownMenuGroup>
                 <DropdownMenuItem @select="emit('select', parent.id, child.id)">打开章节</DropdownMenuItem>

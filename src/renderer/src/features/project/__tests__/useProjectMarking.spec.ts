@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { computed, effectScope, ref } from 'vue'
-import type { JpgPsdPair } from '@shared/types'
+import type { JpgPsdPair, WorkMode } from '@shared/types'
 const mocks = vi.hoisted(() => ({
   settings: { activeWorkMode: 'translated' },
   workspace: { activeChild: { id: 'chapter' }, rememberModeStatuses: vi.fn(), applyPsdStatusOverrides: vi.fn((pairs) => pairs), persistParentsProgress: vi.fn() }
@@ -10,6 +10,23 @@ vi.mock('@renderer/stores/projectWorkspace', () => ({ useProjectWorkspace: () =>
 vi.mock('@renderer/stores/achievements', () => ({ useAchievementsStore: () => ({ refresh: vi.fn() }) }))
 import { useProjectMarking } from '../useProjectMarking'
 describe('card mode marking', () => {
+  it('routes current-mode changes through the chapter session without changing the global default', () => {
+    mocks.settings.activeWorkMode = 'translated'
+    const mode = ref<WorkMode>('translated')
+    const setCurrentMode = vi.fn((next: WorkMode) => { mode.value = next })
+    const scope = effectScope()
+    const marking = scope.run(() => useProjectMarking({
+      pairs: ref([]), currentParent: computed(() => null),
+      currentMode: computed(() => mode.value), setCurrentMode
+    }))!
+    try {
+      marking.setActiveMode('proofread')
+      expect(setCurrentMode).toHaveBeenCalledWith('proofread')
+      expect(marking.activeMode.value).toBe('proofread')
+      expect(mocks.settings.activeWorkMode).toBe('translated')
+    } finally { scope.stop() }
+  })
+
   it.each(['translated', 'proofread', 'supervised'] as const)('toggles only %s, independently of typeset status', async mode => {
     vi.clearAllMocks()
     mocks.settings.activeWorkMode = mode

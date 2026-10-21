@@ -220,7 +220,7 @@ async function onDelete(parentId: string, childId: string): Promise<void> {
 </script>
 
 <template>
-  <div ref="sidebarRoot" class="project-management flex h-full min-h-0 flex-col bg-card-bg">
+  <div ref="sidebarRoot" class="project-management flex h-full min-h-0 min-w-0 flex-col bg-card-bg">
     <div class="new-controls" data-testid="sidebar-actions">
       <div class="new-heading">
         <div><h3>项目<span class="count">{{ parents.length }} 部</span></h3><p v-if="listPage">选择章节开始工作，或批量整理项目</p></div>
@@ -250,7 +250,7 @@ async function onDelete(parentId: string, childId: string): Promise<void> {
          这个 div 就是真正的滚动口（工具栏在它外面，所以树里 `top: 0`
          = 工具栏正下方那一行）。`data-testid="tree-scroll"` 给截图工装用：
          面板 HTML 被注入截图页之后，脚本要能直接拿到滚动口去设 scrollTop。 -->
-    <div v-else class="min-h-0 flex-1 overflow-auto" data-testid="tree-scroll">
+    <div v-else class="min-h-0 min-w-0 flex-1 overflow-y-auto overflow-x-hidden" data-testid="tree-scroll">
       <p v-if="!filteredParents.length" class="p-4 text-sm text-text-secondary">没有匹配的漫画或章节</p>
       <ProjectTree
         :parents="filteredParents"

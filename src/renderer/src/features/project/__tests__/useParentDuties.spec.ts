@@ -87,6 +87,17 @@ describe('职责表：声明 > 推断 > 空', () => {
     expect(result.dutyMap.value.p1).toEqual(['translated'])
   })
 
+  it('显式空职责覆盖历史标记，只有缺省字段才允许推断', () => {
+    const workspace = useProjectWorkspace()
+    workspace.parents = [parent('cleared', ['c1'], []), parent('legacy', ['c2'])]
+    const achievements = useAchievementsStore()
+    achievements.statistics = [stat('c1', { proofread: 60 }), stat('c2', { proofread: 60 })]
+    achievements.loaded = true
+    const { result } = withSetup(() => useParentDuties())
+    expect(result.dutyMap.value.cleared).toEqual([])
+    expect(result.dutyMap.value.legacy).toEqual(['proofread'])
+  })
+
   it('没声明时按标记推断：一个父级把各话的标记汇总后取最多（真实语料：TRIGGER 60 个嵌字）', () => {
     const workspace = useProjectWorkspace()
     workspace.parents = [parent('p1', ['c1', 'c2'])]

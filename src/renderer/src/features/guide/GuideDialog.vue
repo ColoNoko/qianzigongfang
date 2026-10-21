@@ -83,7 +83,7 @@ onBeforeUnmount(() => { window.removeEventListener('message', receive); observer
         title="汉化工坊使用指引"
         data-testid="guide-frame"
         sandbox="allow-scripts"
-        :src="`./guide/index.html#${startWithEntry ? 'reference/add' : 'quick/welcome'}`"
+        :src="`./guide/index.html#${startWithEntry ? 'reference/add' : 'quick/add'}`"
         @load="initialize"
       />
       <div v-if="!loaded" class="guide-loading" role="status">

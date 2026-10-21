@@ -61,7 +61,7 @@
   document.addEventListener('keydown', event => {
     if (event.key !== 'Escape' || event.defaultPrevented) return;
     // Escape first belongs to an open practice modal, menu, editor, or search.
-    if (document.querySelector('dialog[open]') || !ready || ui.editor || ui.dutyOpen || ui.addAnchor || event.target.id === 'search' || route.section === 'search') return;
+    if (document.querySelector('dialog[open]') || !ready || ui.editor || ui.dutyOpen || ui.dutyMenuOpen || ui.directoryOpen || ui.expanded || ui.addAnchor || event.target.id === 'search' || route.section === 'search') return;
     event.preventDefault();
     event.stopImmediatePropagation();
     send('close');

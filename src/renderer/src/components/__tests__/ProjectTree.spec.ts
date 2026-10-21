@@ -1,8 +1,8 @@
 import { DropdownMenu, DropdownMenuItem } from '../ui/dropdown-menu'
 import { flushPromises } from '@vue/test-utils'
+import { createPinia, setActivePinia } from 'pinia'
+import StatisticsTimeMenu from '@renderer/features/project/StatisticsTimeMenu.vue'
 // @vitest-environment jsdom
-import { readFileSync } from 'node:fs'
-import { resolve } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { config, enableAutoUnmount, mount } from '@vue/test-utils'
 config.global.stubs.teleport = true
@@ -421,7 +421,7 @@ describe('ProjectTree', () => {
       // 细线是吸顶的表头/正文分界，只属于侧栏；「项目」页展开后**不能**多出这条线
       // （曾漏过一次：这条判断当时没跟着 stickyParentHeader 走）。
       expect(wrapper.findAll('.font-bold')[0].classes()).not.toContain('border-hairline')
-      expect(wrapper.get('[data-child-id="c1"]').classes()).not.toContain('scroll-mt-[65px]')
+      expect(wrapper.get('[data-child-id="c1"]').classes()).not.toContain('scroll-mt-[80px]')
     })
 
     it('打开后：展开的父级行吸顶（sticky/top-0/z-10 + 不透明底 + 1px 细线），子行留出表头高度', async () => {
@@ -441,8 +441,8 @@ describe('ProjectTree', () => {
       await collapsed.trigger('click')
       const expanded = wrapper.findAll('.font-bold')[0]
       expect(expanded.classes()).toContain('border-hairline')
-      // 字面量锁住 41px：行高（24px 刷新按钮 + py-2 + 1px 细线）一变，这条就会红
-      expect(wrapper.get('[data-child-id="c1"]').classes()).toContain('scroll-mt-[65px]')
+      // 标题与职责分成两层后，定位仍需避开吸顶表头。
+      expect(wrapper.get('[data-child-id="c1"]').classes()).toContain('scroll-mt-[80px]')
     })
 
     it('多选标记态：底色仍是选中色，且与吸顶底色显式互斥（不靠 Tailwind 的输出顺序）', () => {
@@ -466,52 +466,9 @@ describe('ProjectTree', () => {
   })
 })
 
-/**
- * 父级「职责」标签（2026-10-03）。
- *
- * 起因：一本漫画归我干哪道工序以前只能塞在名字里（`__校对` / `【翻译】`），
- * 而父级行开头那个 6px 小圆点其实只是"展开/收起"状态 —— 与左边的箭头重复。
- * 现在圆点的位置让给职责：单字小胶囊（嵌/翻/校/监），**槽宽固定两个字**，
- * 这样名字永远在同一条竖线上（对照图里 ② 暴露过"名字起点漂"）。
- */
+// Assignment labels open an editor; they never act as work-mode toggles.
 describe('父级职责标签', () => {
   const dutiesProps: Record<string, WorkMode[]> = { p1: ['proofread'] }
-
-  it('胶囊长相只在 CSS 里定义一处：全走 token，不许写死颜色与圆角', () => {
-    const raw = readFileSync(resolve(__dirname, '../../styles/index.css'), 'utf8')
-    // ⚠️ **先把注释剥掉再断言**：注释里也会出现这些 token 名，不剥的话锁会被注释喂饱
-    // （虚锁 —— 本仓库踩过一次：`html()` 把注释一起序列化，删掉元素照样绿）。
-    const css = raw.replace(/\/\*[\s\S]*?\*\//g, '')
-    const start = css.indexOf('.duty-chip {')
-    const end = css.indexOf('.duty-chip__seg:focus-visible')
-    expect(start, 'styles/index.css 里找不到 .duty-chip —— 原语没了或改了名').toBeGreaterThan(-1)
-    expect(end, '找不到焦点环那一节（说明原语被拆散或改名了）').toBeGreaterThan(start)
-    const block = css.slice(start, end)
-
-    // ① 底 / 边 / 圆角 / 字级 / 两段宽度：一条条对着"实测过的取值标准"锁
-    expect(block).toContain('background: var(--bg-sunken)') // 日 1.19:1 / 夜 1.22:1
-    expect(block).toContain('inset 0 0 0 1px var(--chip-border)') // 两主题都对卡片与行悬停 ≥3:1
-    expect(block).toContain('border-radius: var(--radius-badge)') // 6px，不再是硬编码 4px
-    expect(block).toContain('font-size: 11px') // 仓库最小字级；10px 是这次要修的毛病之一
-    expect(block).toContain('color: var(--text-secondary)') // 日 5.64 / 夜 5.12:1
-    expect(block).toContain('width: 15px') // 单职责
-    expect(block).toContain('width: 30px') // 双职责 = 槽宽预算，不是随手写的数
-    expect(block).toContain('background: var(--accent)') // 选中段（保持实心，不降档）
-
-    // ② §15.6 的账：这一族里不许再出现硬编码颜色 / 硬编码圆角
-    expect(block).not.toMatch(/#[0-9a-fA-F]{3,8}\b/)
-    expect(block).not.toMatch(/rounded-\[/)
-
-    // ③ 新 token 必须**两处同步**（tokens.css 日+夜，theme.ts 运行时覆写）
-    const tokens = readFileSync(resolve(__dirname, '../../styles/tokens.css'), 'utf8')
-    const theme = readFileSync(resolve(__dirname, '../../stores/theme.ts'), 'utf8')
-    expect(tokens.match(/--chip-border/g) ?? [], '--chip-border 要在日/夜各定义一次').toHaveLength(
-      2
-    )
-    expect(theme, 'theme.ts 里漏了 --chip-border（夜间会退回 CSS 回退值）').toContain(
-      "set('--chip-border'"
-    )
-  })
 
   it('职责全称按规范顺序排列', () => {
     // ⚠️ 组件的**唯一**输入是宿主算好的 `parentDuties`（它不认识父级自带的 duties，
@@ -519,7 +476,7 @@ describe('父级职责标签', () => {
     const wrapper = mount(ProjectTree, {
       props: { parents: makeParents(), parentDuties: { p1: ['supervised', 'proofread'] } }
     })
-    const chips = wrapper.findAll('[data-testid="parent-duty-pill"] button')
+    const chips = wrapper.findAll('[data-testid="parent-duty-pill"] [data-duty-mode]')
     expect(chips.map((node) => node.text())).toEqual(['校对', '监修'])
   })
 
@@ -537,7 +494,7 @@ describe('父级职责标签', () => {
       props: { parents: makeParents(), parentDuties: { ...dutiesProps } }
     })
     const chip = wrapper.findAll('[data-testid="parent-duty-pill"]')[0]
-    await chip.trigger('contextmenu')
+    await chip.trigger('click')
 
     // 点标签不该把父级展开（父级行整体是可点区域）
     expect(wrapper.emitted('expand')).toBeUndefined()
@@ -551,7 +508,7 @@ describe('父级职责标签', () => {
     const wrapper = mount(ProjectTree, {
       props: { parents: makeParents(), parentDuties: { p1: ['typeset', 'translated'] } }
     })
-    await wrapper.findAll('[data-testid="parent-duty-pill"]')[0].trigger('contextmenu')
+    await wrapper.findAll('[data-testid="parent-duty-pill"]')[0].trigger('click')
 
     const blocked = wrapper.find('[data-testid="parent-duty-option-proofread"]')
     expect(blocked.attributes('disabled')).toBeDefined()
@@ -566,7 +523,7 @@ describe('父级职责标签', () => {
     const wrapper = mount(ProjectTree, {
       props: { parents: makeParents(), parentDuties: { p1: ['proofread'] } }
     })
-    await wrapper.findAll('[data-testid="parent-duty-pill"]')[0].trigger('contextmenu')
+    await wrapper.findAll('[data-testid="parent-duty-pill"]')[0].trigger('click')
     await wrapper.find('[data-testid="parent-duty-option-proofread"]').trigger('click')
     expect(wrapper.emitted('setDuties')![0]).toEqual(['p1', []])
   })
@@ -579,7 +536,7 @@ describe('父级职责标签', () => {
       attachTo: document.body
     })
     try {
-      await wrapper.findAll('[data-testid="parent-duty-pill"]')[0].trigger('contextmenu')
+      await wrapper.findAll('[data-testid="parent-duty-pill"]')[0].trigger('click')
 
       // ① 菜单**内部**按下：不许关 —— 否则后续的 click 会落空（选项就选不中了）。
       // 真实鼠标顺序：pointerdown 先冒泡到 document，click 才到按钮上。
@@ -611,7 +568,7 @@ describe('父级职责标签', () => {
     })
     try {
       const chip = () => wrapper.findAll('[data-testid="parent-duty-pill"]')[0]
-      await chip().trigger('contextmenu')
+      await chip().trigger('click')
       expect(wrapper.find('[data-testid="parent-duty-menu"]').exists()).toBe(true)
 
       // 真实鼠标：先 pointerdown（现在它在"槽"内 ⇒ 不许动菜单），再 click（由 toggle 收起）
@@ -621,7 +578,7 @@ describe('父级职责标签', () => {
         'pointerdown 落在胶囊上时不许把菜单关掉（否则 click 又会把它打开）'
       ).toBe(true)
 
-      await chip().trigger('contextmenu')
+      await chip().trigger('click')
       expect(wrapper.find('[data-testid="parent-duty-menu"]').exists()).toBe(false)
     } finally {
       wrapper.unmount()
@@ -636,7 +593,7 @@ describe('父级职责标签', () => {
     // 关闭时不该有多余的层级（不然吸顶/选中态的层级会乱）
     expect(wrapper.findAll('.font-bold')[0].classes()).not.toContain('z-30')
 
-    await wrapper.findAll('[data-testid="parent-duty-pill"]')[0].trigger('contextmenu')
+    await wrapper.findAll('[data-testid="parent-duty-pill"]')[0].trigger('click')
 
     // 打开的那一行抬起来；它的邻居不受影响
     expect(wrapper.findAll('.font-bold')[0].classes()).toContain('z-30')
@@ -645,18 +602,174 @@ describe('父级职责标签', () => {
 })
 
 
-it('switches only the chosen comic and hides add when two duties are present', async () => {
-  const parents = makeParents()
-  const wrapper = mount(ProjectTree, { props: { parents, parentDuties: { p1: ['translated', 'proofread'], p2: ['typeset'] }, parentModes: { p1: 'proofread', p2: 'typeset' } } })
-  try {
+describe('responsibilities stay separate from work mode', () => {
+  it('clicking a colored duty opens its editor, without switching mode or opening the project', async () => {
+    const wrapper = mount(ProjectTree, {
+      props: {
+        parents: makeParents(),
+        parentDuties: { p1: ['translated', 'proofread'], p2: ['typeset'] },
+        parentModes: { p1: 'proofread', p2: 'typeset' }
+      }
+    })
     const slots = wrapper.findAll('[data-testid="parent-duty-slot"]')
-    expect(slots[0].find('[data-testid="parent-duty-chip"]').exists()).toBe(false)
-    expect(slots[1].find('[data-testid="parent-duty-typeset"]').exists()).toBe(true)
     await slots[0].get('[data-testid="parent-duty-translated"]').trigger('click')
-    expect(wrapper.emitted('switchMode')?.at(-1)).toEqual(['p1', 'translated'])
-    expect(slots[1].get('[data-testid="parent-duty-typeset"]').attributes('data-state')).toBe('on')
-    await slots[0].get('[data-testid="parent-duty-pill"]').trigger('contextmenu')
-    await flushPromises()
     expect(wrapper.find('[data-testid="parent-duty-menu"]').exists()).toBe(true)
-  } finally { wrapper.unmount() }
+    expect(wrapper.emitted('switchMode')).toBeUndefined()
+    expect(wrapper.emitted('expand')).toBeUndefined()
+    expect(wrapper.emitted('setDuties')).toBeUndefined()
+    await wrapper.get('[data-testid="parent-duty-option-translated"]').trigger('click')
+    expect(wrapper.emitted('setDuties')).toEqual([['p1', ['proofread']]])
+    expect(slots[1].get('[data-testid="parent-duty-typeset"]').text()).toBe('嵌字')
+  })
+
+  it('keeps all assigned duty labels when the host changes mode or disables a mode', async () => {
+    const wrapper = mount(ProjectTree, {
+      props: {
+        parents: makeParents(),
+        parentDuties: { p1: ['typeset', 'translated'], p2: ['proofread', 'supervised'] },
+        parentModes: { p1: 'typeset', p2: 'proofread' }
+      }
+    })
+    const labels = () => wrapper.findAll('[data-duty-mode]').map(node => ({
+      role: node.attributes('data-duty-mode'),
+      text: node.text()
+    }))
+    const before = labels()
+    expect(before).toEqual([
+      { role: 'typeset', text: '嵌字' }, { role: 'translated', text: '翻译' },
+      { role: 'proofread', text: '校对' }, { role: 'supervised', text: '监修' }
+    ])
+    await wrapper.setProps({ parentModes: { p1: 'translated', p2: 'supervised' }, enabledModes: ['typeset'] })
+    expect(labels()).toEqual(before)
+    // These are assignment labels, not disabled mode-switch controls.
+    expect(wrapper.get('[data-testid="parent-duty-pill"]').attributes('disabled')).toBeUndefined()
+    await wrapper.get('[data-testid="parent-duty-translated"]').trigger('click')
+    expect(wrapper.find('[data-testid="parent-duty-menu"]').exists()).toBe(true)
+    expect(wrapper.emitted('switchMode')).toBeUndefined()
+  })
+
+  it('chapter marking and statistics use the current parent mode even outside its assigned duties', async () => {
+    setActivePinia(createPinia())
+    const wrapper = mount(ProjectTree, {
+      props: {
+        parents: makeParents(),
+        mode: 'typeset',
+        parentDuties: { p1: ['translated', 'proofread'] },
+        parentModes: { p1: 'supervised' }
+      },
+      attachTo: document.body
+    })
+    await wrapper.findAll('button[aria-label="展开子项目"]')[0].trigger('click')
+    const row = wrapper.get('[data-child-id="c1"]')
+    const dutyLabels = () => wrapper.get('[data-parent-id="p1"]')
+      .findAll('[data-duty-mode]').map(label => label.text())
+    expect(dutyLabels()).toEqual(['翻译', '校对'])
+
+    // Activate the actual chapter menu and its item, not a synthetic parent emit.
+    const markFromMenu = async (label: string) => {
+      await row.get('.chapter-actions').trigger('keydown', { key: 'Enter' })
+      await flushPromises()
+      const action = wrapper.findAllComponents(DropdownMenuItem).find(item => item.text() === label)
+      expect(action, `Missing chapter action: ${label}`).toBeTruthy()
+      await action!.trigger('click')
+      await flushPromises()
+    }
+    await markFromMenu('标记已监修')
+    expect(wrapper.emitted('markChildDone')).toEqual([['c1', 'supervised']])
+
+    await row.trigger('contextmenu', { button: 2, clientX: 1, clientY: 1 })
+    await flushPromises()
+    const statistics = () => wrapper.findAllComponents(StatisticsTimeMenu)
+      .find(menu => menu.props('target').childId === 'c1')
+    expect(statistics()).toBeTruthy()
+    expect(statistics()!.props('mode')).toBe('supervised')
+
+    await wrapper.setProps({ parentModes: { p1: 'translated' } })
+    expect(statistics()!.props('mode')).toBe('translated')
+    await row.trigger('keydown', { key: 'Escape' })
+    await flushPromises()
+    await markFromMenu('标记已翻译')
+    expect(wrapper.emitted('markChildDone')).toEqual([
+      ['c1', 'supervised'], ['c1', 'translated']
+    ])
+    expect(dutyLabels()).toEqual(['翻译', '校对'])
+    expect(wrapper.emitted('setDuties')).toBeUndefined()
+    expect(wrapper.emitted('switchMode')).toBeUndefined()
+  })
+
+  it('expanding and collapsing only emits disclosure, even when a duty suggests another mode', async () => {
+    const wrapper = mount(ProjectTree, {
+      props: { parents: makeParents(), mode: 'typeset', parentDuties: { p1: ['translated'] } }
+    })
+    await wrapper.findAll('button[aria-label="展开子项目"]')[0].trigger('click')
+    await wrapper.get('button[aria-label="折叠子项目"]').trigger('click')
+    expect(wrapper.emitted('expand')).toEqual([['p1', true], ['p1', false]])
+    expect(wrapper.emitted('switchMode')).toBeUndefined()
+    expect(wrapper.emitted('setDuties')).toBeUndefined()
+  })
+
+  it('has a keyboard-focusable editor trigger and Escape closes without altering duties', async () => {
+    const wrapper = mount(ProjectTree, {
+      props: { parents: makeParents(), parentDuties: { p1: ['proofread'] } },
+      attachTo: document.body
+    })
+    const trigger = wrapper.get('[data-testid="parent-duty-pill"]')
+    expect(trigger.element.tagName).toBe('BUTTON')
+    expect(trigger.attributes('type')).toBe('button')
+    expect(trigger.attributes('aria-label')).toContain('校对')
+    expect(trigger.attributes('aria-haspopup')).toBe('dialog')
+    await trigger.trigger('click')
+    await flushPromises()
+    expect(trigger.attributes('aria-expanded')).toBe('true')
+    expect(wrapper.get('[data-testid="parent-duty-option-proofread"]').attributes('aria-pressed')).toBe('true')
+    await wrapper.get('[data-testid="parent-duty-menu"]').trigger('keydown', { key: 'Escape' })
+    await flushPromises()
+    expect(trigger.attributes('aria-expanded')).toBe('false')
+    expect(document.activeElement).toBe(trigger.element)
+    expect(wrapper.find('[data-testid="parent-duty-menu"]').exists()).toBe(false)
+    expect(wrapper.emitted('setDuties')).toBeUndefined()
+  })
+
+  it('offers 设置职责 for empty duties and keeps editing available after clearing the last one', async () => {
+    const wrapper = mount(ProjectTree, { props: { parents: makeParents(), parentDuties: { p1: [] } } })
+    const trigger = wrapper.findAll('[data-testid="parent-duty-chip"]')[0]
+    expect(trigger.text()).toBe('设置职责')
+    await trigger.trigger('click')
+    await wrapper.get('[data-testid="parent-duty-option-proofread"]').trigger('click')
+    expect(wrapper.emitted('setDuties')?.at(-1)).toEqual(['p1', ['proofread']])
+    await wrapper.setProps({ parentDuties: { p1: ['proofread'] } })
+    await wrapper.get('[data-testid="parent-duty-option-proofread"]').trigger('click')
+    expect(wrapper.emitted('setDuties')?.at(-1)).toEqual(['p1', []])
+    await wrapper.setProps({ parentDuties: { p1: [] } })
+    expect(wrapper.findAll('[data-testid="parent-duty-chip"]')[0].text()).toBe('设置职责')
+    expect(wrapper.find('[data-testid="parent-duty-menu"]').exists()).toBe(true)
+  })
+
+  it('opens the same duties editor from 更多操作 → 修改职责 without selection side effects', async () => {
+    const wrapper = mount(ProjectTree, {
+      props: { parents: makeParents(), parentDuties: { p1: ['proofread'] }, multiSelect: true }
+    })
+    await selectParentAction(wrapper, '修改职责')
+    expect(wrapper.find('[data-testid="parent-duty-menu"]').exists()).toBe(true)
+    expect(wrapper.emitted('toggleParentMark')).toBeUndefined()
+    expect(wrapper.emitted('expand')).toBeUndefined()
+    expect(wrapper.emitted('switchMode')).toBeUndefined()
+  })
+
+  it('keeps full long chapter names and progress accessible, and each click selects exactly once', async () => {
+    const parents = makeParents()
+    const title = '在星海尽头等待那封迟来的信以及从未说出口的漫长告别与再会之约'
+    parents[0].children[0].projectTitle = title
+    const wrapper = mount(ProjectTree, { props: { parents } })
+    await wrapper.findAll('button[aria-label="展开子项目"]')[0].trigger('click')
+    const row = wrapper.get('[data-child-id="c1"]')
+    const button = row.get('.chapter-main')
+    expect(button.attributes('aria-label')).toContain(title)
+    expect(button.attributes('aria-label')).toContain('嵌字进度1/2')
+    expect(button.get('span').attributes('title')).toContain(title)
+    await button.trigger('click')
+    await row.get('.chapter-progress').trigger('click')
+    expect(wrapper.emitted('select')).toEqual([['p1', 'c1'], ['p1', 'c1']])
+    expect(wrapper.emitted('switchMode')).toBeUndefined()
+  })
 })

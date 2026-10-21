@@ -1,50 +1,74 @@
-/* Project-management layout follows docs/previews/project-management-compare.html. */
+/* Shared project list and workbench sidebar. All colors follow the user theme. */
 .project-management { container-type: inline-size; }
 .project-management .new-controls { padding:16px; border-bottom:1px solid var(--border); flex:none; }
 .project-management .new-heading { display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; }
 .project-management .new-heading h3 { font-size:18px; font-weight:600; }
 .project-management .count { font-size:12px; font-weight:400; color:var(--fg-muted); margin-left:9px; }
 .project-management .new-heading p { font-size:12px; color:var(--fg-muted); margin-top:4px; }
-.project-management .buttons { display:flex; align-items:center; gap:8px; }
-.project-management .search-box { position:relative; margin-top:14px; }
+.project-management .buttons { display:flex; align-items:center; gap:8px; flex-wrap:wrap; max-width:100%; }
+.project-management .search-box { position:relative; margin-top:14px; min-width:0; }
 .project-management .search-box>svg { position:absolute; left:10px; top:10px; width:15px; height:15px; color:var(--fg-muted); }
-.project-management .search-box input { padding-left:32px; }
+.project-management .search-box input { padding-left:32px; min-width:0; }
 .project-management .batch-panel { margin-top:12px; padding-top:10px; border-top:1px solid var(--border); }
 .project-management .selection-summary { display:flex; align-items:center; justify-content:space-between; }
 .project-management .selection-summary strong { font-size:13px; }
 .project-management .batch-buttons { display:flex; gap:6px; flex-wrap:wrap; margin-top:10px; }
 .project-management .scope-note { font-size:11px; line-height:1.5; color:var(--fg-muted); margin-top:8px; }
+.project-management-tree { --chapter-progress-width:166px; --chapter-bar-width:44px; min-width:0; }
 .project-management-tree .comic-group { border-bottom:1px solid var(--border); }
-.project-management-tree .comic-heading { display:flex; gap:6px; align-items:center; padding:10px 12px; background:var(--bg-raised); }
+.project-management-tree .comic-heading { display:flex; gap:6px; align-items:center; padding:12px; background:var(--bg-raised); }
+.project-management-tree .comic-heading>button { flex-shrink:0; }
+.project-management-tree .comic-heading.bg-selected-bg { background:var(--selected-bg); }
 .project-management-tree .comic-info { min-width:0; flex:1; }
-.project-management-tree .comic-info strong { display:block; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; font-size:13px; font-weight:650; }
-.project-management-tree .comic-meta { display:flex; gap:6px; align-items:center; margin-top:4px; font-size:11px; color:var(--fg-muted); font-weight:400; }
-.project-management-tree .role-labels { padding:0; border:0; background:transparent; gap:6px; box-shadow:none; flex-wrap:wrap; }
-.project-management-tree .role-label { border:1px solid var(--border); border-radius:4px; padding:0 4px; font-size:10px; font-weight:400; height:17px; min-width:0; color:var(--fg-muted); background:transparent; box-shadow:none; }
-.project-management-tree .role-label[data-state=on] { color:var(--accent); background:var(--primary-soft); border-color:var(--accent); }
-.project-management-tree .chapter-row { display:flex; gap:6px; align-items:center; padding:8.75px 12px 8.75px 27px; min-height:37.5px; }
+.project-management-tree .comic-info strong { display:block; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; font-size:16px; line-height:24px; font-weight:650; }
+.project-management-tree .comic-meta { display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-top:5px; font-size:11px; line-height:20px; color:var(--fg-muted); font-weight:400; }
+.project-management-tree .comic-meta>span { flex:none; font-variant-numeric:tabular-nums; }
+.project-management-tree [data-testid="parent-duty-slot"] { min-width:0; max-width:100%; }
+.project-management-tree .role-labels { height:auto; min-height:22px; max-width:100%; padding:0; border:0; background:transparent; gap:5px; box-shadow:none; flex-wrap:wrap; justify-content:flex-start; }
+.project-management-tree .role-labels:hover { background:transparent; }
+.project-management-tree .role-label { display:inline-flex; align-items:center; border:1px solid color-mix(in srgb, var(--duty-fg) 22%, transparent); border-radius:var(--radius-badge); padding:0 5px; font-size:11px; line-height:18px; font-weight:500; min-width:0; color:var(--duty-fg); background:var(--duty-bg); }
+.project-management-tree .role-label[data-duty-mode="typeset"] { --duty-fg:var(--role-typeset); --duty-bg:var(--role-typeset-soft); }
+.project-management-tree .role-label[data-duty-mode="translated"] { --duty-fg:var(--role-translated); --duty-bg:var(--role-translated-soft); }
+.project-management-tree .role-label[data-duty-mode="proofread"] { --duty-fg:var(--role-proofread); --duty-bg:var(--role-proofread-soft); }
+.project-management-tree .role-label[data-duty-mode="supervised"] { --duty-fg:var(--role-supervised); --duty-bg:var(--role-supervised-soft); }
+.project-management-tree .empty-duty { height:22px; padding:0 3px; font-size:11px; font-weight:400; color:var(--fg-muted); text-decoration:underline; text-underline-offset:3px; }
+/* Title length cannot resize the progress or menu tracks. Reserve the menu
+   track in management mode too, so entering management does not move progress. */
+.project-management-tree .chapter-row { display:grid; grid-template-columns:minmax(0,1fr) var(--chapter-progress-width) 24px; gap:8px; align-items:center; padding:5px 12px 5px 30px; min-width:0; min-height:40px; }
+.project-management-tree .chapter-row.is-multi-select { grid-template-columns:16px minmax(0,1fr) var(--chapter-progress-width) 24px; }
 .project-management-tree .chapter-row:hover { background:var(--hover-surface); }
 .project-management-tree .chapter-row.active { box-shadow:inset 3px 0 var(--accent); background:var(--primary-soft); }
-.project-management-tree .chapter-row.selected { background:var(--primary-soft); }
-.project-management-tree .chapter-main { display:flex; align-items:center; gap:6px; text-align:left; min-width:0; flex:1; color:inherit; background:none; border:0; padding:0; cursor:pointer; }
-.project-management-tree .chapter-main>span:first-child { min-width:0; flex:1; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; font-size:13px; line-height:20px; }
-.project-management-tree .chapter-main:focus-visible { outline:2px solid var(--accent); outline-offset:2px; border-radius:3px; }
-.project-management-tree .chapter-progress { display:flex; flex:none; align-items:center; gap:6px; white-space:nowrap; }
-.project-management-tree .chapter-progress small { font-size:12px; color:var(--fg-muted); }
-.project-management-tree .chapter-actions { height:20px; width:20px; flex:none; }
+.project-management-tree .chapter-row.selected { background:var(--selected-bg); }
+.project-management-tree .chapter-main { display:block; text-align:left; min-width:0; max-width:100%; height:auto; min-height:30px; color:inherit; background:none; border:0; padding:0; font-weight:400; }
+.project-management-tree .chapter-main:hover { background:transparent; }
+.project-management-tree .chapter-main>span { display:block; min-width:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; font-size:13px; line-height:20px; }
+.project-management-tree .chapter-progress { display:grid; grid-template-columns:minmax(0,1fr) var(--chapter-bar-width); gap:8px; align-items:center; min-width:0; width:var(--chapter-progress-width); white-space:nowrap; font-variant-numeric:tabular-nums; }
+.project-management-tree .chapter-progress small { display:flex; justify-content:flex-end; align-items:center; min-width:0; font-size:11px; color:var(--fg-muted); }
+.project-management-tree .progress-count { display:inline-block; min-width:5ch; text-align:right; }
+.project-management-tree .chapter-progress-bar { width:var(--chapter-bar-width); height:3px; }
+.project-management-tree .chapter-actions { height:24px; width:24px; }
 .project-management-tree .drag-handle { cursor:grab; flex:none; color:var(--fg-muted); font-size:16px; padding:0 3px; }
 .project-management-tree .drag-handle:active { cursor:grabbing; }
-@container (max-width:240px) {
+@container (max-width:420px) {
+  .project-management-tree { --chapter-progress-width:78px; --chapter-bar-width:28px; }
   .project-management-tree .progress-mode { display:none; }
-  .project-management-tree .chapter-progress [role=progressbar] { width:24px; }
+  .project-management-tree .comic-heading { padding-top:10px; padding-bottom:10px; }
+  .project-management-tree .comic-info strong { font-size:14px; line-height:21px; }
+  .project-management-tree .chapter-row { padding-left:18px; gap:6px; }
+  .project-management-tree .chapter-progress { gap:6px; }
+}
+@container (max-width:240px) {
+  .project-management-tree { --chapter-progress-width:66px; --chapter-bar-width:20px; }
   .project-management .new-controls { padding:10px; }
   .project-management .buttons { gap:4px; }
   .project-management .new-heading h3 { font-size:15px; }
   .project-management .new-heading p { display:none; }
   .project-management .batch-panel button { font-size:11px; padding-left:6px; padding-right:6px; }
-  .project-management-tree .comic-heading { padding:8px 5px; gap:2px; }
-  .project-management-tree .comic-info strong { white-space:normal; overflow-wrap:anywhere; }
-  .project-management-tree .comic-meta { flex-wrap:wrap; }
-  .project-management-tree .comic-heading>button { width:24px; flex-shrink:0; }
-  .project-management-tree .chapter-row { padding-left:12px; padding-right:6px; }
+  .project-management-tree .comic-heading { padding:9px 5px; gap:2px; }
+  .project-management-tree .comic-meta { gap:4px; }
+  .project-management-tree .comic-heading>button { width:24px; }
+  .project-management-tree .role-labels { gap:3px; }
+  .project-management-tree .role-label { padding:0 3px; }
+  .project-management-tree .chapter-row { padding-left:8px; padding-right:6px; gap:4px; }
+  .project-management-tree .chapter-progress { gap:4px; }
 }

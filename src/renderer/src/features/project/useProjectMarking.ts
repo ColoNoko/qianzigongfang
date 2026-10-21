@@ -21,6 +21,7 @@ export interface UseProjectMarkingOptions {
   pairs: Ref<JpgPsdPair[]>
   currentParent: ComputedRef<ParentProject | null>
   currentMode?: ComputedRef<WorkMode>
+  setCurrentMode?: (mode: WorkMode) => void
 }
 
 export function useProjectMarking(options: UseProjectMarkingOptions) {
@@ -31,7 +32,15 @@ export function useProjectMarking(options: UseProjectMarkingOptions) {
   const settings = useSettingsStore()
   const activeMode = computed({
     get: () => options.currentMode?.value ?? (options.currentParent.value ? settings.modeForProject(options.currentParent.value) : settings.activeWorkMode),
-    set: (mode: WorkMode) => { const parent = options.currentParent.value; if (parent) void settings.setProjectWorkMode(parent.id, mode); else void settings.setActiveWorkMode(mode) }
+    set: (mode: WorkMode) => {
+      if (options.setCurrentMode) {
+        options.setCurrentMode(mode)
+        return
+      }
+      const parent = options.currentParent.value
+      if (parent) void settings.setProjectWorkMode(parent.id, mode)
+      else void settings.setActiveWorkMode(mode)
+    }
   })
   watch(activeMode, () => { selectedPairs.value = [] })
 

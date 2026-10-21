@@ -293,16 +293,14 @@ const zoomRatio = ref(1)
 const sharedPan = ref({ x: 0, y: 0 })
 watch(zoomRatio, ratio => { if (ratio <= 1) sharedPan.value = { x: 0, y: 0 } })
 watch([() => props.psdPath, () => props.jpgPath, () => props.mode, () => props.translation?.mode], () => { zoomRatio.value = 1; sharedPan.value = { x: 0, y: 0 } })
+// 展开仅由宿主在应用内容区内布局，不改变 Electron 窗口或显示器全屏状态。
 const fullscreen = ref(false)
-const fullscreenError = ref('')
-function syncFullscreen(): void { fullscreen.value = !!document.fullscreenElement; emit('update:fullscreen', fullscreen.value) }
-async function toggleFullscreen(): Promise<void> {
-  try {
-    fullscreenError.value = ''
-    if (document.fullscreenElement) await document.exitFullscreen()
-    else await document.documentElement.requestFullscreen()
-    syncFullscreen()
-  } catch { fullscreenError.value = '无法切换全屏，请重试' }
+function setExpanded(value: boolean): void {
+  fullscreen.value = value
+  emit('update:fullscreen', value)
+}
+function toggleFullscreen(): void {
+  setExpanded(!fullscreen.value)
 }
 let lastPageWheel = -Infinity
 function onPageWheel(delta: number): void {
@@ -622,6 +620,7 @@ async function loadPsd(
 }
 
 function resetState(): void {
+  setExpanded(false)
   sourceSeq++
   releaseSources()
   jpgUrl.value = null
@@ -678,9 +677,17 @@ watch(
 
 // --- Keyboard (ESC to close) ----------------------------------------------
 function onKeydown(e: KeyboardEvent): void {
-  if (!props.visible) return
+  if (!props.visible || e.defaultPrevented) return
+  // Reka 的菜单/弹层在 window 处理 Escape；它们晚于预览挂载。
+  // 先让最上层弹层消费按键，不抢走关闭弹层的 Esc 或菜单的方向键。
+  if (document.querySelector('[data-dismissable-layer]:not([data-state="closed"])')) return
   if (e.key === 'Escape') {
-    if (fullscreen.value || document.fullscreenElement) { e.preventDefault(); e.stopImmediatePropagation(); void toggleFullscreen(); return }
+    if (fullscreen.value) {
+      e.preventDefault()
+      e.stopImmediatePropagation()
+      setExpanded(false)
+      return
+    }
     // 播放中 Esc = 先停播放（再按一次才退出预览）。
     // 不在播放时保持老行为：Esc 直接关窗 —— 既有用例锁着这一条。
     if (props.playing) emit('stopPlayback')
@@ -713,19 +720,17 @@ function onKeydown(e: KeyboardEvent): void {
 
 onMounted(() => {
   window.addEventListener('keydown', onKeydown)
-  document.addEventListener('fullscreenchange', syncFullscreen)
 })
 
 onBeforeUnmount(() => {
   window.removeEventListener('keydown', onKeydown)
-  document.removeEventListener('fullscreenchange', syncFullscreen)
-  emit('update:fullscreen', false)
-  if (fullscreen.value && document.fullscreenElement) void document.exitFullscreen()
+  setExpanded(false)
   sourceSeq++
   releaseSources()
 })
 
 function onClose(): void {
+  setExpanded(false)
   emit('close')
 }
 
@@ -860,7 +865,7 @@ function onMark(status: 'done' | 'pending'): void {
       <TranslationModeToggle v-if="translation" :mode="translation.mode" @update:mode="emit('translationMode', $event)" />
       <TranslationAddFrameToggle v-if="translation" :add-frame-mode="translation.addFrameMode ?? false" @update:add-frame-mode="emit('translationAddFrameMode', $event)" />
 
-              <ViewerImageControls :page-number="pageNumber" :page-count="pageCount" :zoom-ratio="zoomRatio" :fullscreen="fullscreen" :fullscreen-error="fullscreenError" @pick-page="emit('pickPage', $event)" @update:zoom-ratio="zoomRatio = $event" @fullscreen="toggleFullscreen" />
+              <ViewerImageControls :page-number="pageNumber" :page-count="pageCount" :zoom-ratio="zoomRatio" :fullscreen="fullscreen" @pick-page="emit('pickPage', $event)" @update:zoom-ratio="zoomRatio = $event" @fullscreen="toggleFullscreen" />
             </template>
           </CompareImagePane>
         </template>
@@ -920,7 +925,7 @@ function onMark(status: 'done' | 'pending'): void {
       <TranslationModeToggle v-if="translation" :mode="translation.mode" @update:mode="emit('translationMode', $event)" />
       <TranslationAddFrameToggle v-if="translation" :add-frame-mode="translation.addFrameMode ?? false" @update:add-frame-mode="emit('translationAddFrameMode', $event)" />
 
-              <ViewerImageControls :page-number="pageNumber" :page-count="pageCount" :zoom-ratio="zoomRatio" :fullscreen="fullscreen" :fullscreen-error="fullscreenError" @pick-page="emit('pickPage', $event)" @update:zoom-ratio="zoomRatio = $event" @fullscreen="toggleFullscreen" />
+              <ViewerImageControls :page-number="pageNumber" :page-count="pageCount" :zoom-ratio="zoomRatio" :fullscreen="fullscreen" @pick-page="emit('pickPage', $event)" @update:zoom-ratio="zoomRatio = $event" @fullscreen="toggleFullscreen" />
             </div>
         <div class="flex min-h-0 min-w-0 flex-1">
         <!-- Left: JPG preview -->

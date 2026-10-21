@@ -177,18 +177,20 @@ describe('父级职责：写入前必须洗一遍', () => {
     expect(await dutiesOf('p-clean')).toEqual(['typeset', 'translated'])
 
     await setParentDuties('p-clean', ['校对'] as unknown as import('@shared/types').WorkMode[])
-    // 垃圾值洗成"空职责" = 没声明过 ⇒ 字段被删掉，读回来是 undefined（不是空数组）
-    expect(await dutiesOf('p-clean')).toBeUndefined()
+    // 无效选择规范化为显式空职责，不能在加载时重新推断。
+    expect(await dutiesOf('p-clean')).toEqual([])
   })
 
-  it('空数组 = 清空：字段直接删掉，不留一个空数组在库里', async () => {
+  it('空数组 = 显式无职责：落库和重新打开数据库后都保留', async () => {
     await seedParent('p-clear')
     await setParentDuties('p-clear', ['typeset'])
     expect(await dutiesOf('p-clear')).toEqual(['typeset'])
 
     await setParentDuties('p-clear', [])
     const raw = await readRawProjects()
-    expect(raw).not.toContain('duties')
+    expect(JSON.parse(raw!)[0].duties).toEqual([])
+    await closeDatabase()
+    expect(await dutiesOf('p-clear')).toEqual([])
   })
 
   it('父级不存在 → 抛错（不许静默"什么都没改还报成功"），且什么都不动', async () => {

@@ -62,7 +62,7 @@ describe('加载项目树时保留职责', () => {
 
     await workspace.loadParents()
 
-    expect(workspace.parents[0].duties).toBeUndefined()
+    expect(workspace.parents[0].duties).toEqual([])
   })
 
   it('没有这个字段 → undefined（不是空数组，界面据此走"按标记推断"）', async () => {
@@ -74,6 +74,19 @@ describe('加载项目树时保留职责', () => {
     await workspace.loadParents()
 
     expect(workspace.parents[0].duties).toBeUndefined()
+  })
+
+  it('显式清空会保留 []，重新加载不退回历史推断', async () => {
+    let stored = treeWith(['proofread'])
+    window.comicType.projectGetTree = vi.fn(async () => structuredClone(stored)) as typeof window.comicType.projectGetTree
+    window.comicType.projectSetParentDuties = vi.fn(async (_id, duties) => { stored = treeWith(duties) })
+    const workspace = useProjectWorkspace()
+    await workspace.loadParents()
+    await workspace.setParentDuties('p1', [])
+    expect(workspace.parents[0].duties).toEqual([])
+    workspace.parents = []
+    await workspace.loadParents()
+    expect(workspace.parents[0].duties).toEqual([])
   })
 
   /**

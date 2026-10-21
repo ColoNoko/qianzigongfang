@@ -21,6 +21,8 @@ import ProjectSidebar from '@renderer/components/ProjectSidebar.vue'
 import ProjectThumbList from '@renderer/components/ProjectThumbList.vue'
 import ProjectFooter from '@renderer/components/ProjectFooter.vue'
 import CompareViewer from '@renderer/components/CompareViewer.vue'
+import WorkModeSegments from '@renderer/components/WorkModeSegments.vue'
+import { useChapterWorkMode } from '@renderer/features/project/useChapterWorkMode'
 import PreviewThumbStrip from '@renderer/components/PreviewThumbStrip.vue'
 import MarkHistoryDialog from '@renderer/features/project/MarkHistoryDialog.vue'
 import { summarizeMarkOperation, type MarkAuditOperation } from '@shared/mark-audit'
@@ -112,7 +114,18 @@ const currentParent = computed(
     null
 )
 
-const { dutyMap, modeMap } = useParentDuties()
+const { dutyMap, modeMap, dutiesReady } = useParentDuties()
+const { currentMode, setCurrentMode } = useChapterWorkMode({
+  parent: currentParent,
+  child,
+  duties: computed(() => dutyMap.value[currentParent.value?.id ?? ''] ?? []),
+  dutiesReady: computed(() => !!currentParent.value && dutiesReady(currentParent.value.id)),
+  requestedMode: computed(() => route.query.workMode)
+})
+// 侧栏当前作品的进度与单章操作跟随当前视图；其他作品仍保留自己的职责模式。
+const sidebarModeMap = computed(() => currentParent.value
+  ? { ...modeMap.value, [currentParent.value.id]: currentMode.value }
+  : modeMap.value)
 
 // Scan result for the active child — fed to ProjectThumbList.
 const pairs = ref<JpgPsdPair[]>([])
@@ -130,7 +143,8 @@ const {
 } = useProjectMarking({
   pairs,
   currentParent,
-  currentMode: computed(() => currentParent.value ? modeMap.value[currentParent.value.id] : settings.activeWorkMode)
+  currentMode,
+  setCurrentMode
 })
 
 const {
@@ -950,6 +964,9 @@ function clearAddFrameNotice(): void {
  */
 const compareViewerRef = ref<InstanceType<typeof CompareViewer> | null>(null)
 const viewerFullscreen = ref(false)
+const projectSurface = ref<HTMLElement | null>(null)
+watch(compareVisible, visible => { if (!visible) viewerFullscreen.value = false })
+watch(childId, () => { viewerFullscreen.value = false })
 
 function onTranslationEditGroup(index: number, groupName: string): void {
   const entry = compareTranslation.value?.entry
@@ -1010,15 +1027,6 @@ const {
   childId,
   currentParent
 })
-
-watch(() => [currentParent.value?.id, route.query.workMode, settings.settingsLoaded], () => {
-  const parent = currentParent.value
-  const requestedMode = route.query.workMode as WorkMode
-  if (parent && settings.settingsLoaded) {
-    const mode = settings.enabledWorkModes.includes(requestedMode) ? requestedMode : settings.modeForProject(parent, dutyMap.value[parent.id])
-    void settings.setProjectWorkMode(parent.id, mode)
-  }
-}, { immediate: true })
 
 // --- 标记台账：撤销 / 记录（第十四轮）-----------------------------------------
 const undoableMark = ref<MarkAuditOperation | null>(null)
@@ -1624,7 +1632,7 @@ async function refreshAfterSelfCheck(): Promise<void> {
   </div>
 
   <!-- Adjustable project list + thumbnail workspace -->
-  <div v-else class="page-in h-full">
+  <div v-else ref="projectSurface" data-project-surface class="page-in relative h-full">
     <SplitPane
       :primary-percent="settings.projectListWidth"
       :min-primary-window-ratio="0.2"
@@ -1641,7 +1649,7 @@ async function refreshAfterSelfCheck(): Promise<void> {
             :child-sort-order="settings.childSortOrder"
             :mode="activeMode"
             :parent-duties="dutyMap"
-          :parent-modes="modeMap"
+          :parent-modes="sidebarModeMap"
             :duty-mode-priority="settings.dutyModePriority"
             @select="onSidebarSelect"
             @rename-parent="onRenameParent"
@@ -1662,15 +1670,16 @@ async function refreshAfterSelfCheck(): Promise<void> {
       </template>
 
       <template #secondary>
-        <Teleport to="body" :disabled="!viewerFullscreen">
-        <section data-viewer-workspace :class="{ 'fixed inset-0 z-40': viewerFullscreen }" class="flex h-full min-w-0 flex-col overflow-hidden bg-app-bg">
+        <Teleport :to="projectSurface ?? 'body'" :disabled="!viewerFullscreen">
+        <section data-viewer-workspace :data-expanded="viewerFullscreen" :class="{ 'absolute inset-0 z-40': viewerFullscreen }" class="flex h-full min-w-0 flex-col overflow-hidden bg-app-bg">
           <!-- Header bar -->
           <header
             class="flex min-h-[96px] flex-col justify-center gap-0.5 border-b border-border px-4 py-2"
           >
             <div class="flex min-w-0 items-center justify-between gap-3">
               <h2
-                class="min-w-0 truncate text-[17px] font-semibold tracking-tight text-text-primary"
+                class="min-w-0 truncate text-[18px] font-semibold tracking-tight text-text-primary"
+                :title="`${formatChapterNumber(child.chapterNumber)} · ${child.projectTitle}`"
               >
                 {{ formatChapterNumber(child.chapterNumber) }} · {{ child.projectTitle }}
               </h2>
@@ -1680,7 +1689,11 @@ async function refreshAfterSelfCheck(): Promise<void> {
                 取而代之的是对照视图原图分屏右上角的页码 `2/18 ▾`。
               -->
             </div>
-            <p class="truncate text-[11px] text-text-tertiary">{{ child.folderPath }}</p>
+            <p class="truncate text-[11px] text-text-tertiary" :title="child.folderPath">{{ child.folderPath }}</p>
+            <div class="mt-1 flex min-w-0 flex-wrap items-center gap-2" data-testid="project-current-mode">
+              <span class="text-[11px] text-text-tertiary" title="只切换当前章节的工作视图，不修改作品职责或全局默认模式">当前工作模式</span>
+              <WorkModeSegments :model-value="currentMode" :modes="settings.enabledWorkModes" label="当前章节工作模式" @update:model-value="setCurrentMode" />
+            </div>
             <!--
               「目录不在」不是故障，是用户整理本地文件后的**预期状态**（2026-10-01）：
               用安静的状态条说明，不再每次切回窗口都弹一次红色告警 —— 红色留给真读不到
