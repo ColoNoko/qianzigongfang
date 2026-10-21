@@ -180,7 +180,9 @@ export async function buildLabelPlusJob(
     )
   }
 
-  const requestedImages = Array.isArray(request.selectedImageNames) ? request.selectedImageNames : []
+  const requestedImages = Array.isArray(request.selectedImageNames)
+    ? request.selectedImageNames
+    : []
   const selectedImages = new Set(requestedImages)
   const requestedGroups = Array.isArray(request.selectedGroups) ? request.selectedGroups : []
   const selectedGroups = new Set(requestedGroups.length > 0 ? requestedGroups : document.groups)
@@ -243,8 +245,7 @@ export async function buildLabelPlusJob(
       // 空字符串 = 没指定 → runner 会回落到分组名本身。
       action: String(request.groupActions?.[name] ?? '').trim(),
       // 只有明确给了合法方向才写覆盖；其余一律跟随 defaults，避免写进一个 undefined。
-      textStyle:
-        direction === 'horizontal' || direction === 'vertical' ? { direction } : {}
+      textStyle: direction === 'horizontal' || direction === 'vertical' ? { direction } : {}
     }
   }
 
@@ -357,7 +358,7 @@ export async function buildLabelPlusJob(
       actions: manifest.actions.enabled ? manifest.actions.setName : null,
       skipped: result.skippedImages.length
     }
-  })
+  }).catch(() => undefined)
 
   return result
 }
@@ -394,11 +395,27 @@ export async function launchLauncherInPhotoshop(
 }
 
 /** 读回执。还没写出来 / 写了一半 / 文件不存在都返回 null —— 调用方按"进行中"处理。 */
-export async function readLabelPlusJobReport(reportPath: string): Promise<LabelPlusJobReport | null> {
+export async function readLabelPlusJobReport(
+  reportPath: string
+): Promise<LabelPlusJobReport | null> {
   try {
     const raw = await readFile(resolve(reportPath), 'utf8')
     const parsed = JSON.parse(raw) as LabelPlusJobReport
-    if (!parsed || typeof parsed !== 'object' || !Array.isArray(parsed.images)) return null
+    const strings = (value: unknown): boolean =>
+      Array.isArray(value) && value.every((item) => typeof item === 'string')
+    if (
+      !parsed ||
+      typeof parsed !== 'object' ||
+      !Array.isArray(parsed.images) ||
+      typeof parsed.jobId !== 'string' ||
+      ![parsed.generated, parsed.failed, parsed.skipped].every(
+        (n) => Number.isSafeInteger(n) && n >= 0
+      ) ||
+      !(parsed.finishedAt === null || typeof parsed.finishedAt === 'string') ||
+      !strings(parsed.warnings) ||
+      parsed.images.some((image) => !image || typeof image !== 'object' || !strings(image.warnings))
+    )
+      return null
     return parsed
   } catch {
     return null

@@ -1,4 +1,4 @@
-import { ref, type ComputedRef, type Ref } from 'vue'
+import { ref, onMounted, onBeforeUnmount, watch, type ComputedRef, type Ref } from 'vue'
 import type { ChildProject, JpgPsdPair, ParentProject } from '@shared/types'
 import {
   ChildRootMissingError,
@@ -34,6 +34,28 @@ export function useProjectScan(options: UseProjectScanOptions) {
    */
   const chapterMissing = ref(false)
   let scanSeq = 0
+  let disposed = false
+  let lastFocusScanAt = 0
+  let unsubscribe: (() => void) | undefined
+  function syncWatch(): void {
+    void window.comicType.watchProject?.(workspace.activeChild?.folderPath ?? null,
+      document.visibilityState !== 'hidden').catch(() => undefined)
+  }
+  onMounted(() => {
+    syncWatch()
+    unsubscribe = window.comicType.onProjectChanged?.(({ folderPath }) => {
+      const normalize = (path: string) => path.replace(/\\/g, '/').toLowerCase().replace(/\/+$/, '')
+      if (!disposed && workspace.activeChild && normalize(folderPath) === normalize(workspace.activeChild.folderPath))
+        void scanActiveChild(true)
+    })
+  })
+  watch(() => workspace.activeChild?.folderPath, syncWatch)
+  onBeforeUnmount(() => {
+    disposed = true
+    scanSeq++
+    unsubscribe?.()
+    void window.comicType.watchProject?.(null).catch(() => undefined)
+  })
   /** 上一次**装过数据**的那一话，用来区分"换了话"与"同一话重扫"。 */
   let loadedChildId: string | null = null
 
@@ -103,9 +125,10 @@ export function useProjectScan(options: UseProjectScanOptions) {
     }
   }
 
-  async function scanActiveChild(): Promise<void> {
+  async function scanActiveChild(cached = false): Promise<void> {
     const newChild = workspace.activeChild
     if (!newChild) {
+      scanSeq++
       options.pairs.value = []
       options.selectedPairs.value = []
       scanning.value = false
@@ -132,7 +155,8 @@ export function useProjectScan(options: UseProjectScanOptions) {
     const seq = ++scanSeq
     scanning.value = true
     try {
-      const scanned = await workspace.scanChild(newChild)
+      const current = () => !disposed && seq === scanSeq && workspace.activeChild?.id === newChild.id
+      const scanned = await workspace.scanChild(newChild, current, cached)
       if (seq !== scanSeq || workspace.activeChild?.id !== newChild.id) return
       options.pairs.value = scanned
       // 扫描成功 = 目录回来了（用户把文件夹放回来了），提示随之消失。
@@ -160,7 +184,9 @@ export function useProjectScan(options: UseProjectScanOptions) {
           // 目录不在：改用台账里的"最后已知的一话"，让这一话仍然看得见（只读）。
           // 缩略图靠持久缓存（thumbnail-cache.ts）还原，所以重启后也还在。
           // 注意仍然**不碰任何统计缓存** —— scanChild 已抛错，这次取数不落库。
-          options.pairs.value = await loadGhostPairs(newChild)
+          const ghosts = await loadGhostPairs(newChild)
+          if (disposed || seq !== scanSeq || workspace.activeChild?.id !== newChild.id) return
+          options.pairs.value = ghosts
           options.selectedPairs.value = []
           thumbListKey.value += 1
         } else {
@@ -178,8 +204,32 @@ export function useProjectScan(options: UseProjectScanOptions) {
   }
 
   function refreshActiveChild(): void {
+    syncWatch()
     if (document.visibilityState === 'hidden') return
+    if (Date.now() - lastFocusScanAt < 1500) return
+    lastFocusScanAt = Date.now()
     void scanActiveChild()
+  }
+
+  let autoRefreshTimer: ReturnType<typeof setInterval> | null = null
+
+  /**
+   * 工作台可见时的**轻轮询**（2026-10-05，配合主进程热缓存）。
+   *
+   * 分工：主进程侧的目录监听（`project-refresh-watch`）在文件一变时就把扫描缓存
+   * 刷成最新；这里每隔 `intervalMs` 拉一次。于是"PS 存盘后界面最多 `intervalMs`
+   * 自己更新"，不用切窗口、不用等焦点回来。`refreshActiveChild` 内部会跳过隐藏页。
+   */
+  function startAutoRefresh(intervalMs = 10_000): void {
+    if (autoRefreshTimer) return
+    autoRefreshTimer = setInterval(() => refreshActiveChild(), intervalMs)
+  }
+
+  function stopAutoRefresh(): void {
+    if (autoRefreshTimer) {
+      clearInterval(autoRefreshTimer)
+      autoRefreshTimer = null
+    }
   }
 
   async function refreshCurrentProject(): Promise<void> {
@@ -205,6 +255,8 @@ export function useProjectScan(options: UseProjectScanOptions) {
     scanActiveChild,
     refreshActiveChild,
     refreshCurrentProject,
-    cancelScan
+    cancelScan,
+    startAutoRefresh,
+    stopAutoRefresh
   }
 }

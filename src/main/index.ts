@@ -1,3 +1,4 @@
+import { closeFontRepository } from './fonts/repository'
 import { app, shell, BrowserWindow, dialog, screen } from 'electron'
 import { existsSync } from 'fs'
 import { dirname, join } from 'path'
@@ -5,7 +6,6 @@ import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
 import { registerHandlers } from './ipc/handlers'
 import { getLogPath, writeLog } from './services/logger'
-import { clearPsdThumbnailCacheSync } from './services/thumbnail-cache'
 import {
   closeDatabase,
   databasePath,
@@ -260,6 +260,7 @@ function createWindow(bounds: WindowBoundsState, bootThemeArguments: string[]): 
     minHeight: MIN_WINDOW_HEIGHT,
     show: false,
     title: '汉化工坊',
+    ...(process.platform === 'win32' ? {titleBarStyle:'hidden' as const,titleBarOverlay:{color:'#00000000',symbolColor:'#202124',height:36}} : {}),
     autoHideMenuBar: true,
     icon,
     webPreferences: {
@@ -512,7 +513,8 @@ app.on('window-all-closed', () => {
 })
 
 app.on('will-quit', () => {
+  closeFontRepository()
   clearLabelPlusPreviewSessions()
-  clearPsdThumbnailCacheSync()
+  // Persistent thumbnails also serve chapters whose source folder was moved or deleted.
   void closeDatabase()
 })

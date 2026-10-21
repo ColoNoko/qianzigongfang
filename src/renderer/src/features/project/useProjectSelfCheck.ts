@@ -2,7 +2,8 @@ import { computed, ref } from 'vue'
 import type {
   SelfCheckCandidate,
   SelfCheckImportRequest,
-  SelfCheckPreviewResult
+  SelfCheckPreviewResult,
+  SelfCheckRenameHint
 } from '@shared/ipc-api'
 import { useSettingsStore } from '@renderer/stores/settings'
 import { useToastStore } from '@renderer/stores/toast'
@@ -25,6 +26,12 @@ export function useProjectSelfCheck(options: UseProjectSelfCheckOptions) {
   const selfCheckNeverAsk = ref(false)
   const selfCheckConflictActions = ref<Record<string, 'skip' | 'second-version'>>({})
   const selfCheckRunning = ref(false)
+  /**
+   * 「疑似改名」提示（2026-10-05，R1）：候选路径 → 疑似就是那一话。
+   * 只在用户点「检查是不是改名」时算（要逐个候选扫一遍指纹）；**只是提示**，
+   * 认领仍要用户另外确认。
+   */
+  const selfCheckRenameHints = ref<Record<string, SelfCheckRenameHint>>({})
 
   const selfCheckCandidates = computed<SelfCheckCandidate[]>(
     () => selfCheckPreview.value?.candidates ?? []
@@ -49,6 +56,7 @@ export function useProjectSelfCheck(options: UseProjectSelfCheckOptions) {
     selfCheckPreview.value = null
     selfCheckConflictActions.value = {}
     selfCheckNeverAsk.value = false
+    selfCheckRenameHints.value = {}
   }
 
   function resetSelfCheckChoices(): void {
@@ -123,21 +131,59 @@ export function useProjectSelfCheck(options: UseProjectSelfCheckOptions) {
     }
   }
 
+  /**
+   * 「认领」（2026-10-05，R2）：候选不是新章节，它是本父级已有的某一话（本地文件夹改过名）。
+   *
+   * 只把那一话的 `folderPath` 换成候选路径 —— **childId / 集数 / 标记历史 / 进度都不动**
+   * （标记是按 childId 存的，所以"换门牌"不会丢标记；这也是**不能**用"删旧建新"的原因）。
+   */
+  async function reclaimCandidate(folderPath: string, childId: string): Promise<void> {
+    selfCheckBusy.value = true
+    try {
+      await window.comicType.projectReclaimChildPath(selfCheckParentId.value, childId, folderPath)
+      const preview = selfCheckPreview.value
+      if (preview) {
+        // 它不再是"新章节"：当场从候选里摘掉（下次预览也会把它算作"已登记"）。
+        selfCheckPreview.value = {
+          ...preview,
+          candidates: preview.candidates.filter((candidate) => candidate.folderPath !== folderPath)
+        }
+      }
+      delete selfCheckConflictActions.value[folderPath]
+      delete selfCheckRenameHints.value[folderPath]
+      toast.addToast({
+        type: 'success',
+        message: '已认领：那一话的门牌号换成了这个文件夹（标记与进度都保留）'
+      })
+      await options.refreshAfterSelfCheck()
+    } catch (error) {
+      toast.addToast({
+        type: 'error',
+        message: `认领失败：${error instanceof Error ? error.message : String(error)}`
+      })
+    } finally {
+      selfCheckBusy.value = false
+    }
+  }
+
   async function runSelfCheckWithSource(rememberRoot: boolean): Promise<void> {
     const sourceRoot = selfCheckSourceRoot.value.trim()
     if (!sourceRoot) return
     selfCheckRememberRoot.value = rememberRoot
     selfCheckBusy.value = true
     try {
-      if (rememberRoot) {
-        await window.comicType.projectSetSourceRoot(selfCheckParentId.value, sourceRoot)
-      }
+      // ⚠️ **先预览、通过才记住**（2026-10-05）：反过来的话，"选到了某一话自己的文件夹"
+      // 这类被守卫拒用的目录会**先被写进库**，于是下次自动检测还要再撞一次同一个坑
+      // （用户看到的是"改也改不掉"）。记住的语义是"以后就扫这个目录"，那它必须先是可用的。
       const preview = await window.comicType.selfCheckPreview(selfCheckParentId.value, sourceRoot)
       selfCheckPreview.value = preview
 
       if (!preview.canDetect) {
         toast.addToast({ type: 'warning', message: preview.message || '无法读取所选目录' })
         return
+      }
+      if (rememberRoot) {
+        await window.comicType.projectSetSourceRoot(selfCheckParentId.value, sourceRoot)
       }
       if (preview.candidates.length === 0) {
         toast.addToast({ type: 'success', message: '自检完成：未发现新增章节' })
@@ -157,6 +203,37 @@ export function useProjectSelfCheck(options: UseProjectSelfCheckOptions) {
       toast.addToast({
         type: 'error',
         message: `自检检测失败：${error instanceof Error ? error.message : String(error)}`
+      })
+    } finally {
+      selfCheckBusy.value = false
+    }
+  }
+
+  /**
+   * 「检查是不是改名」（R1）：把候选的内容指纹与"目录已不在"的旧话比对。
+   * 只报事实（指纹完全相同），不猜名字，也**不改任何数据**。
+   */
+  async function detectSelfCheckRenames(): Promise<void> {
+    const preview = selfCheckPreview.value
+    if (!preview || preview.candidates.length === 0) return
+    selfCheckBusy.value = true
+    try {
+      const hints = await window.comicType.selfCheckDetectRenames(
+        selfCheckParentId.value,
+        preview.candidates.map((candidate) => candidate.folderPath)
+      )
+      selfCheckRenameHints.value = Object.fromEntries(hints.map((hint) => [hint.folderPath, hint]))
+      toast.addToast({
+        type: 'success',
+        message:
+          hints.length > 0
+            ? `发现 ${hints.length} 条疑似改名（内容与"目录不在"的那一话完全相同）`
+            : '没有发现疑似改名（要么内容不同，要么这一话没留下指纹）'
+      })
+    } catch (error) {
+      toast.addToast({
+        type: 'error',
+        message: `检查改名失败：${error instanceof Error ? error.message : String(error)}`
       })
     } finally {
       selfCheckBusy.value = false
@@ -235,6 +312,7 @@ export function useProjectSelfCheck(options: UseProjectSelfCheckOptions) {
     selfCheckNeverAsk,
     selfCheckConflictActions,
     selfCheckRunning,
+    selfCheckRenameHints,
     selfCheckCandidates,
     selfCheckHasConflict,
     selfCheckHasUnresolvedConflict,
@@ -243,6 +321,8 @@ export function useProjectSelfCheck(options: UseProjectSelfCheckOptions) {
     runSelfCheckWithSource,
     pickSelfCheckDirectory,
     startSelfCheck,
-    confirmSelfCheckImport
+    confirmSelfCheckImport,
+    reclaimCandidate,
+    detectSelfCheckRenames
   }
 }

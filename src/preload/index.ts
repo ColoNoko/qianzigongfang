@@ -1,11 +1,7 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import type { ComicTypeAPI } from '../shared/ipc-api'
 import { parseBootThemeArguments } from '../shared/boot-theme-args'
-import {
-  IPC_GUARD_FLAG,
-  assertIpcPayloadCloneable,
-  isIpcGuardEnabled
-} from '../shared/ipc-guard'
+import { IPC_GUARD_FLAG, assertIpcPayloadCloneable, isIpcGuardEnabled } from '../shared/ipc-guard'
 
 /**
  * The theme snapshot the main process appended to this process's argv.
@@ -42,14 +38,18 @@ const api: ComicTypeAPI = {
   getPathForFile: (file) => webUtils.getPathForFile(file),
   pickDirectory: () => invoke('comicType:pickDirectory'),
   pickLabelPlusFile: () => invoke('comicType:pickLabelPlusFile'),
-  prepareLabelPlusInput: (inputPath) =>
-    invoke('comicType:prepareLabelPlusInput', inputPath),
+  prepareLabelPlusInput: (inputPath) => invoke('comicType:prepareLabelPlusInput', inputPath),
   listDir: (p) => invoke('comicType:listDir', p),
   stat: (p) => invoke('comicType:stat', p),
+  mediaInfo: (p) => invoke('comicType:mediaInfo', p),
+  readMedia: (p, expected) => invoke('comicType:readMedia', p, expected),
+  readPsdThumbnailBytes: (p, mtime) => invoke('comicType:readPsdThumbnailBytes', p, mtime),
+  writePsdThumbnailBytes: (p, mtime, bytes, size) =>
+    invoke('comicType:writePsdThumbnailBytes', p, mtime, bytes, size),
+  invalidatePsdThumbnail: (p, mtime) => invoke('comicType:invalidatePsdThumbnail', p, mtime),
   readFileBuffer: (p) => invoke('comicType:readFileBuffer', p),
   readFileDataURL: (p) => invoke('comicType:readFileDataURL', p),
-  previewLabelPlusImport: (request) =>
-    invoke('comicType:previewLabelPlusImport', request),
+  previewLabelPlusImport: (request) => invoke('comicType:previewLabelPlusImport', request),
   generateLabelPlusPsd: (request) => invoke('comicType:generateLabelPlusPsd', request),
   generateLabelPlusPreviewPsd: (request) =>
     invoke('comicType:generateLabelPlusPreviewPsd', request),
@@ -58,17 +58,32 @@ const api: ComicTypeAPI = {
     invoke('comicType:getLabelPlusPreviewSession', sessionId),
   getLabelPlusPreviewPage: (sessionId, index) =>
     invoke('comicType:getLabelPlusPreviewPage', sessionId, index),
+  readChapterTranslation: (folderPath) => invoke('comicType:readChapterTranslation', folderPath),
+  saveChapterTranslation: (request) => invoke('comicType:saveChapterTranslation', request),
+  undoChapterTranslation: (request) => invoke('comicType:undoChapterTranslation', request),
+  insertChapterTranslation: (request) => invoke('comicType:insertChapterTranslation', request),
+  createChapterTranslation: (request) => invoke('comicType:createChapterTranslation', request),
+  deleteChapterTranslation: (request) => invoke('comicType:deleteChapterTranslation', request),
+  exportChapterTranslation: (request) => invoke('comicType:exportChapterTranslation', request),
+  listTranslationReviews: (folderPath) => invoke('comicType:listTranslationReviews', folderPath),
+  saveTranslationReview: (record) => invoke('comicType:saveTranslationReview', record),
+  deleteTranslationReview: (request) => invoke('comicType:deleteTranslationReview', request),
+  exportTranslationReview: (request) => invoke('comicType:exportTranslationReview', request),
   closeCurrentWindow: () => invoke('comicType:closeCurrentWindow'),
-  readPsdThumbnailCache: (p, mtimeMs) =>
-    invoke('comicType:readPsdThumbnailCache', p, mtimeMs),
+  readPsdThumbnailCache: (p, mtimeMs) => invoke('comicType:readPsdThumbnailCache', p, mtimeMs),
   writePsdThumbnailCache: (p, mtimeMs, dataUrl) =>
     invoke('comicType:writePsdThumbnailCache', p, mtimeMs, dataUrl),
-  scanChildProject: (p) => invoke('comicType:scanChildProject', p),
+  scanChildProject: (p, options) => invoke('comicType:scanChildProject', p, options),
+  watchProject: (p, visible) => invoke('comicType:watchProject', p, visible),
+  onProjectChanged: (callback) => {
+    const listener = (_event: Electron.IpcRendererEvent, payload: { folderPath: string }) => callback(payload)
+    ipcRenderer.on('comicType:projectChanged', listener)
+    return () => ipcRenderer.removeListener('comicType:projectChanged', listener)
+  },
   runLabelPlusInPhotoshop: (request, photoshopPath) =>
     invoke('comicType:runLabelPlusInPhotoshop', request, photoshopPath),
   exportLabelPlusManifest: (request) => invoke('comicType:exportLabelPlusManifest', request),
-  readLabelPlusJobReport: (reportPath) =>
-    invoke('comicType:readLabelPlusJobReport', reportPath),
+  readLabelPlusJobReport: (reportPath) => invoke('comicType:readLabelPlusJobReport', reportPath),
   openPath: (p) => invoke('comicType:openPath', p),
   openExternal: (url) => invoke('comicType:openExternal', url),
   checkForUpdate: () => invoke('comicType:checkForUpdate'),
@@ -78,7 +93,16 @@ const api: ComicTypeAPI = {
   writeLog: (entry) => invoke('comicType:writeLog', entry),
   getLogPath: () => invoke('comicType:getLogPath'),
   importLegacyJson: () => invoke('comicType:importLegacyJson'),
-  fontList: () => invoke('comicType:fontList'),
+  fontList: (options) => invoke('comicType:fontList', options),
+  fontPreview: (path, index, sampleOnly) => invoke('comicType:fontPreview', path, index, sampleOnly),
+  setWindowTitleBarTheme: theme => invoke('comicType:setWindowTitleBarTheme',theme),
+  coverSource: folder => invoke('comicType:coverSource',folder),
+  fontListFolder: (path) => invoke('comicType:fontListFolder', path),
+  onFontsChanged: (listener) => {
+    const handler = (_event: unknown, result: import('../shared/ipc-api').FontListResult) => listener(result)
+    ipcRenderer.on('comicType:fontsChanged', handler)
+    return () => ipcRenderer.removeListener('comicType:fontsChanged', handler)
+  },
   fontInstall: () => invoke('comicType:fontInstall'),
   fontUninstall: (fontId) => invoke('comicType:fontUninstall', fontId),
   fontUninstallMany: (fontIds) => invoke('comicType:fontUninstallMany', fontIds),
@@ -90,7 +114,12 @@ const api: ComicTypeAPI = {
   memoryRemoveProject: (childId) => invoke('comicType:memoryRemoveProject', childId),
   memoryListMarkAudit: (limit) => invoke('comicType:memoryListMarkAudit', limit),
   memoryFindUndoableMark: () => invoke('comicType:memoryFindUndoableMark'),
+  statisticsTimeGet: (target, mode) => invoke('comicType:statisticsTimeGet', target, mode),
+  statisticsTimeSet: (request) => invoke('comicType:statisticsTimeSet', request),
   memoryMarkStatistics: () => invoke('comicType:memoryMarkStatistics'),
+  achievementExportFile: (payload) => invoke('comicType:achievementExportFile', payload),
+  achievementImportFile: () => invoke('comicType:achievementImportFile'),
+  achievementImportDatabase: () => invoke('comicType:achievementImportDatabase'),
   diagnosticsSnapshot: () => invoke('comicType:diagnosticsSnapshot'),
   readLogTail: (maxBytes) => invoke('comicType:readLogTail', maxBytes),
   memoryUndoMark: (opId) => invoke('comicType:memoryUndoMark', opId),
@@ -101,13 +130,19 @@ const api: ComicTypeAPI = {
   selfCheckPreview: (parentId, sourceRoot) =>
     invoke('comicType:selfCheckPreview', parentId, sourceRoot),
   selfCheckImport: (request) => invoke('comicType:selfCheckImport', request),
+  selfCheckDetectRenames: (parentId, candidatePaths) =>
+    invoke('comicType:selfCheckDetectRenames', parentId, candidatePaths),
   projectSetSourceRoot: (parentId, sourceRoot) =>
     invoke('comicType:projectSetSourceRoot', parentId, sourceRoot),
+  projectSetParentSourceRoots: (parentId, roots) =>
+    invoke('comicType:projectSetParentSourceRoots', parentId, roots),
+  projectReclaimChildPath: (parentId, childId, folderPath) =>
+    invoke('comicType:projectReclaimChildPath', parentId, childId, folderPath),
   projectGetTree: () => invoke('comicType:projectGetTree'),
   projectSaveTree: (tree) => invoke('comicType:projectSaveTree', tree),
+  projectSaveChanges: (before, after) => invoke('comicType:projectSaveChanges', before, after),
   projectSaveProgress: (updates) => invoke('comicType:projectSaveProgress', updates),
-  projectDeleteChildren: (childIds) =>
-    invoke('comicType:projectDeleteChildren', childIds),
+  projectDeleteChildren: (childIds) => invoke('comicType:projectDeleteChildren', childIds),
   projectRenameParent: (parentId, title) =>
     invoke('comicType:projectRenameParent', parentId, title),
   projectSetParentDuties: (parentId, duties) =>

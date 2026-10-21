@@ -35,3 +35,13 @@ function stemOf(name: string): string {
   const dot = name.lastIndexOf('.')
   return dot > 0 ? name.slice(0, dot) : name
 }
+
+/** Only pure page numbers ignore padding; titles, dates and decimal pages stay distinct. */
+export function pagePairKeyOf(path: string): string {
+  const key = pairKeyOf(path)
+  return /^\d+$/.test(key) ? key.replace(/^0+(?=\d)/, '') : key
+}
+
+export function exactPairPriority(psd: string, image: string): number {
+  return pairKeyOf(psd) === pairKeyOf(image) ? 0 : 1
+}

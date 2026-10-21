@@ -1,4 +1,7 @@
 <script setup lang="ts">
+import { Dialog, DialogContent, DialogTitle } from '@renderer/components/ui/dialog'
+import { Button as UiButton } from '@renderer/components/ui/button'
+import UiInput from '@renderer/components/ui/ControlInput.vue'
 // MarkHistoryDialog — 标记台账（第十四轮）。
 //
 // 存在的理由见 shared/mark-audit.ts：这个项目真的丢过标记，而当时唯一的证据是
@@ -70,10 +73,13 @@ function timeText(at: number): string {
 
 function kindTag(operation: MarkAuditOperation): { label: string; className: string } {
   switch (operation.kind) {
+    // ⚠️ 淡彩底（`-soft`）上的字必须用 `-on-soft`，**不能用 `-fg`**：
+    // `-fg` 是"压实心色块"的字（98% 亮度），压在 94% 亮度的 `-soft` 上只有 1.07:1，
+    // 昼夜两个主题都读不出字（2026-10-07 修）。详见 styles/tokens.css 那段注释。
     case 'undo':
-      return { label: '撤销', className: 'bg-warning-soft text-warning-fg' }
+      return { label: '撤销', className: 'bg-warning-soft text-warning-on-soft' }
     case 'restore':
-      return { label: '还原', className: 'bg-info-soft text-info-fg' }
+      return { label: '还原', className: 'bg-info-soft text-info-on-soft' }
     case 'migrate':
       return { label: '迁移', className: 'bg-media-bg text-text-tertiary' }
     default:
@@ -142,23 +148,15 @@ watch(
 </script>
 
 <template>
-  <div
-    v-if="open"
-    class="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-6"
-    data-testid="mark-history-overlay"
-    @click.self="emit('close')"
-  >
-    <div
+  <Dialog :open="true" @update:open="!$event && (emit('close'))" v-if="open">
+    <DialogContent
       class="flex max-h-[80vh] w-full max-w-3xl flex-col overflow-hidden rounded-xl border border-border bg-card-bg text-text-primary shadow-[var(--shadow-3)]"
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby="mark-history-title"
       data-testid="mark-history-dialog"
-    >
+     :show-close="false" :aria-describedby="undefined">
       <header class="flex items-center gap-3 border-b border-border px-5 py-3">
-        <h2 id="mark-history-title" class="text-[15px] font-semibold tracking-tight">
+        <DialogTitle class="text-[15px] font-semibold tracking-tight">
           标记记录
-        </h2>
+        </DialogTitle>
         <span class="shrink-0 rounded-full bg-media-bg px-2 py-0.5 text-[11px] leading-none text-text-tertiary">
           最近 {{ operations.length }} 次操作
         </span>
@@ -166,7 +164,7 @@ watch(
           v-if="childId"
           class="ml-2 flex cursor-pointer items-center gap-1.5 text-[12px] text-text-secondary"
         >
-          <input
+          <UiInput
             v-model="onlyCurrentChild"
             type="checkbox"
             class="accent-[var(--accent)]"
@@ -174,17 +172,17 @@ watch(
           />
           只看当前话
         </label>
-        <button
+        <UiButton variant="ghost" size="sm"
           type="button"
-          class="ml-auto flex h-7 items-center rounded-badge px-2 text-[12px] text-text-secondary transition-colors hover:bg-card-bg-hover hover:text-text-primary"
+          class="ml-auto flex items-center transition-colors"
           data-testid="mark-history-refresh"
           @click="load"
         >
           刷新
-        </button>
-        <button
+        </UiButton>
+        <UiButton variant="ghost" size="sm"
           type="button"
-          class="flex h-7 w-7 shrink-0 items-center justify-center rounded-badge text-text-tertiary transition-colors hover:bg-card-bg-hover hover:text-text-primary"
+          class="flex w-7 shrink-0 items-center justify-center transition-colors"
           aria-label="关闭"
           data-testid="mark-history-close"
           @click="emit('close')"
@@ -192,7 +190,7 @@ watch(
           <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <path d="M6 6l12 12M18 6L6 18" />
           </svg>
-        </button>
+        </UiButton>
       </header>
 
       <div class="min-h-0 flex-1 overflow-y-auto px-5 py-3" data-testid="mark-history-list">
@@ -232,24 +230,24 @@ watch(
               <span class="shrink-0 text-[12px] tabular-nums text-text-tertiary">
                 {{ timeText(operation.at) }}
               </span>
-              <button
+              <UiButton variant="ghost" size="sm"
                 type="button"
-                class="shrink-0 rounded-badge px-2 py-0.5 text-[12px] text-text-secondary transition-colors hover:bg-card-bg-hover hover:text-text-primary"
+                class="shrink-0 transition-colors"
                 :data-testid="`mark-history-expand-${operation.opId}`"
                 @click="toggle(operation.opId)"
               >
                 {{ expanded.has(operation.opId) ? '收起' : '明细' }}
-              </button>
-              <button
+              </UiButton>
+              <UiButton variant="outline" size="sm"
                 v-if="isUndoableOperation(operation) && !undoneOpIds.has(operation.opId)"
                 type="button"
-                class="shrink-0 rounded-badge border border-primary-border bg-primary-soft px-2 py-0.5 text-[12px] text-accent transition-colors hover:bg-primary-soft-hover disabled:cursor-not-allowed disabled:opacity-40"
+                class="shrink-0 transition-colors disabled:cursor-not-allowed disabled:opacity-40"
                 :disabled="undoing === operation.opId"
                 :data-testid="`mark-history-undo-${operation.opId}`"
                 @click="undo(operation)"
               >
                 还原到这一步之前
-              </button>
+              </UiButton>
             </div>
 
             <div
@@ -290,6 +288,6 @@ watch(
         还原只会把「改之前」的标记与时间戳写回去，不会动文件、也不会删任何记录 ——
         还原动作本身也会记一条流水。
       </footer>
-    </div>
-  </div>
+    </DialogContent>
+  </Dialog>
 </template>

@@ -1,303 +1,52 @@
 // @vitest-environment jsdom
-import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { mount } from '@vue/test-utils'
-import { flushPromises } from '@vue/test-utils'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { mount, flushPromises, enableAutoUnmount } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
-import type { DashboardParent } from '@renderer/stores/project'
 import { PAIRED_PSD_STATS_VERSION } from '@shared/status'
-
-// --- vue-router mock -------------------------------------------------------
-const { mockPush } = vi.hoisted(() => ({ mockPush: vi.fn() }))
-vi.mock('vue-router', () => ({
-  useRouter: () => ({ push: mockPush })
-}))
-
-// Import after mocks are registered.
-import Dashboard from '../Dashboard.vue'
+import type { DashboardParent } from '@renderer/stores/project'
 import { useAchievementsStore } from '@renderer/stores/achievements'
-
-// --- test data helpers -----------------------------------------------------
-/** A PSD stat that is "done" (mtimeMs - ctimeMs > 5 min). */
-const DONE_PSD = { mtimeMs: 600_000, ctimeMs: 0 }
-/** A PSD stat that is "pending" (not done). */
-const PENDING_PSD = { mtimeMs: 0, ctimeMs: 0 }
-
-function makeParent(opts: {
-  id: string
-  title: string
-  children: Array<{
-    id: string
-    chapterNumber: string
-    projectTitle: string
-    psdStats: { mtimeMs: number; ctimeMs: number }[]
-    lastMtimeMs?: number
-  }>
-}): DashboardParent {
-  return {
-    id: opts.id,
-    title: opts.title,
-    lastMtimeMs: opts.children.reduce((m, c) => Math.max(m, c.lastMtimeMs ?? 0), 0),
-    children: opts.children.map((c) => ({
-      id: c.id,
-      parentTitle: opts.title,
-      folderPath: `/tmp/${c.id}`,
-      chapterNumber: c.chapterNumber,
-      projectTitle: c.projectTitle,
-      lastMtimeMs: c.lastMtimeMs ?? 0,
-      psdStats: c.psdStats,
-      // 引用当前版本号：写死数字会在缓存版本升级时被判定过期而重算。
-      statsVersion: PAIRED_PSD_STATS_VERSION
-    }))
-  }
+import { useSettingsStore } from '@renderer/stores/settings'
+const { push } = vi.hoisted(() => ({ push: vi.fn() }))
+vi.mock('vue-router', () => ({ useRouter: () => ({push}) }))
+vi.mock('@renderer/features/dashboard/HomeCover.vue', () => ({default:{template:'<span />'}}))
+vi.mock('@renderer/features/dashboard/HomeGreeting.vue', () => ({default:{template:'<span />'}}))
+import Dashboard from '../Dashboard.vue'
+enableAutoUnmount(afterEach)
+const done = {mtimeMs:600000,ctimeMs:0}, pending = {mtimeMs:0,ctimeMs:0}
+const fixture = (): DashboardParent[] => [{id:'p',title:'测试漫画',lastMtimeMs:100,children:[
+ {id:'working',parentTitle:'测试漫画',folderPath:'/work',chapterNumber:'1',projectTitle:'进行中章节',lastMtimeMs:300,psdStats:[done,pending],statsVersion:PAIRED_PSD_STATS_VERSION},
+ {id:'pending',parentTitle:'测试漫画',folderPath:'/pending',chapterNumber:'2',projectTitle:'待做章节',lastMtimeMs:200,psdStats:[pending],statsVersion:PAIRED_PSD_STATS_VERSION},
+ {id:'done',parentTitle:'测试漫画',folderPath:'/done',chapterNumber:'3',projectTitle:'完成章节',lastMtimeMs:100,psdStats:[done],statsVersion:PAIRED_PSD_STATS_VERSION}
+]}]
+async function setup(data=fixture(),modern=false) {
+ window.comicType = {projectGetTree:vi.fn().mockResolvedValue(data),storeGet:vi.fn().mockImplementation(key=>Promise.resolve(key==='recentProjectIds'?['pending','working','done']:undefined)),storeSet:vi.fn().mockResolvedValue(undefined),projectSaveProgress:vi.fn().mockResolvedValue(undefined)} as unknown as typeof window.comicType
+ const pinia=createPinia();setActivePinia(pinia);if(modern)useSettingsStore().homeStyle='modern'
+ const wrapper=mount(Dashboard,{global:{plugins:[pinia]}});await flushPromises();return wrapper
 }
-
-function setupStore(data: unknown): void {
-  window.comicType = {
-    projectGetTree: vi.fn().mockResolvedValue(data),
-    storeGet: vi.fn().mockResolvedValue(undefined),
-    projectSaveProgress: vi.fn().mockResolvedValue(undefined),
-    scanChildProject: vi.fn().mockResolvedValue({
-      jpgPairs: [
-        {
-          jpgPath: '/tmp/page.jpg',
-          psd: {
-            absPath: '/tmp/page.psd',
-            mtimeMs: Date.now(),
-            ctimeMs: Date.now() - 600_000,
-            status: 'done'
-          }
-        }
-      ],
-      txtFiles: [],
-      errors: []
-    })
-  } as unknown as typeof window.comicType
-}
-
-async function mountDashboard() {
-  const pinia = createPinia()
-  setActivePinia(pinia)
-  const wrapper = mount(Dashboard, { global: { plugins: [pinia] } })
-  await flushPromises()
-  return wrapper
-}
-
-beforeEach(() => {
-  mockPush.mockReset()
-})
-
-describe('Dashboard', () => {
-  it('empty registry shows the 添加项目 CTA', async () => {
-    setupStore([])
-    const wrapper = await mountDashboard()
-    expect(wrapper.find('[data-testid="add-project-cta"]').exists()).toBe(true)
-    expect(wrapper.find('[data-testid="focus-card"]').exists()).toBe(false)
-  })
-
-  it('recent card shows parent title + formatted chapter; clicking navigates to project route', async () => {
-    const parent = makeParent({
-      id: 'p1',
-      title: 'ドラゴンボール',
-      children: [
-        {
-          id: 'c1',
-          chapterNumber: '第1話',
-          projectTitle: 'vol1',
-          psdStats: [DONE_PSD, PENDING_PSD],
-          lastMtimeMs: 1000
-        }
-      ]
-    })
-    setupStore([parent])
-    const wrapper = await mountDashboard()
-
-    const card = wrapper.find('[data-testid="recent-project-card"]')
-    expect(card.exists()).toBe(true)
-    expect(card.text()).toContain('ドラゴンボール')
-    expect(card.text()).toContain('第1集')
-
-    await card.trigger('click')
-    expect(mockPush).toHaveBeenCalledWith(
-      '/project/' + encodeURIComponent('ドラゴンボール') + '/c1'
-    )
-  })
-
-  it('done children appear in the 已完成项目 column with PSD counts', async () => {
-    const parent = makeParent({
-      id: 'p1',
-      title: 'ワンピース',
-      children: [
-        { id: 'c1', chapterNumber: '第1話', projectTitle: 'v1', psdStats: [DONE_PSD] },
-        { id: 'c2', chapterNumber: '第2話', projectTitle: 'v2', psdStats: [DONE_PSD, DONE_PSD] }
-      ]
-    })
-    setupStore([parent])
-    const wrapper = await mountDashboard()
-
-    const section = wrapper.find('[data-testid="completed-section"]')
-    expect(section.exists()).toBe(true)
-    expect(section.findAll('li')).toHaveLength(2)
-    expect(section.text()).toContain('ワンピース')
-    expect(section.text()).toContain('2 PSD')
-  })
-
-  it('child with pct=0 appears in 待嵌字项目 column with PSD count', async () => {
-    const parent = makeParent({
-      id: 'p1',
-      title: 'ナルト',
-      children: [{ id: 'c1', chapterNumber: '第1話', projectTitle: 'v1', psdStats: [PENDING_PSD] }]
-    })
-    setupStore([parent])
-    const wrapper = await mountDashboard()
-
-    const section = wrapper.find('[data-testid="pending-section"]')
-    expect(section.exists()).toBe(true)
-    expect(section.findAll('li')).toHaveLength(1)
-    expect(section.text()).toContain('第1集')
-    expect(section.text()).toContain('1 PSD')
-  })
-
-  it('shows achievement summary cards at the bottom', async () => {
-    const parent = makeParent({
-      id: 'p1',
-      title: 'ナルト',
-      children: [{ id: 'c1', chapterNumber: '第1話', projectTitle: 'v1', psdStats: [DONE_PSD] }]
-    })
-    setupStore([parent])
-    const wrapper = await mountDashboard()
-    await flushPromises()
-
-    expect(wrapper.find('[data-testid="dashboard-achievements"]').exists()).toBe(true)
-    expect(wrapper.find('[data-testid="dashboard-month-count"]').text()).toContain('当月嵌字数量')
-    expect(wrapper.find('[data-testid="dashboard-year-count"]').text()).toContain('当年嵌字数量')
-    expect(wrapper.find('[data-testid="dashboard-total-count"]').text()).toContain('总嵌字数量')
-  })
-
-  it('uses a three-column recent-project grid when three projects are available', async () => {
-    const parent = makeParent({
-      id: 'p1',
-      title: '龙珠',
-      children: [1, 2, 3].map((number) => ({
-        id: `c${number}`,
-        chapterNumber: String(number),
-        projectTitle: `v${number}`,
-        psdStats: [PENDING_PSD],
-        lastMtimeMs: number
-      }))
-    })
-    setupStore([parent])
-    const wrapper = await mountDashboard()
-
-    expect(wrapper.findAll('[data-testid="recent-project-card"]')).toHaveLength(3)
-    expect(wrapper.find('[data-testid="recent-projects"] .grid').classes()).toContain('grid-cols-3')
-  })
-
-  it('uses two independent status cards that fill the remaining height', async () => {
-    const parent = makeParent({
-      id: 'p1',
-      title: '龙珠',
-      children: [
-        { id: 'c1', chapterNumber: '1', projectTitle: '完成', psdStats: [DONE_PSD] },
-        { id: 'c2', chapterNumber: '2', projectTitle: '待办', psdStats: [PENDING_PSD] }
-      ]
-    })
-    setupStore([parent])
-    const wrapper = await mountDashboard()
-
-    const status = wrapper.get('[data-testid="status-overview-section"]')
-    expect(status.classes()).toContain('flex-1')
-    expect(status.classes()).toContain('grid-cols-2')
-    expect(wrapper.get('[data-testid="completed-section"]').classes()).toContain('bg-card-bg')
-    expect(wrapper.get('[data-testid="pending-section"]').classes()).toContain('bg-card-bg')
-  })
-})
-
-/**
- * 首页「统计模式」（第十五轮 B1）。
- *
- * 以前首页写死嵌字口径（`computeProgress(child.psdStats)`），而侧栏/工作台/成就页都跟模式 ——
- * 切到监修时首页和侧栏说的不是一回事。现在首页走**侧栏用的同一个函数** `childModeProgress`，
- * 并且与「成就」页共用同一个模式（改一处两页一起变）。
- */
-describe('Dashboard 统计模式', () => {
-  function mountDashboard(): ReturnType<typeof mount> {
-    const pinia = createPinia()
-    setActivePinia(pinia)
-    return mount(Dashboard, { global: { plugins: [pinia] } })
-  }
-
-  function oneChildWithHalfSupervised(): DashboardParent {
-    const parent = makeParent({
-      id: 'p1',
-      title: 'ドラゴンボール',
-      children: [
-        {
-          id: 'c1',
-          chapterNumber: '第1集',
-          projectTitle: 'vol1',
-          psdStats: [DONE_PSD, DONE_PSD]
-        }
-      ]
-    })
-    // 嵌字：2/2 完成；监修：只标了 1/2（这就是"两个口径"的分叉点）
-    parent.children[0].psdModeStats = {
-      typeset: [],
-      translated: [],
-      proofread: [],
-      supervised: [{ mtimeMs: 600_000, ctimeMs: 0 }]
-    }
-    return parent
-  }
-
-  it('默认嵌字口径：2/2 的那一话出现在「已完成项目」', async () => {
-    setupStore([oneChildWithHalfSupervised()])
-    const wrapper = mountDashboard()
-    await flushPromises()
-
-    expect(wrapper.get('[data-testid="completed-section"]').text()).toContain('第1集')
-    expect(wrapper.get('[data-testid="pending-section"]').text()).toContain('待嵌字项目')
-  })
-
-  it('切到监修：进度改从 psdModeStats 取 —— 1/2 就不算完成，列标题也跟着换', async () => {
-    setupStore([oneChildWithHalfSupervised()])
-    const wrapper = mountDashboard()
-    await flushPromises()
-
-    const select = wrapper.findComponent({ name: 'AppSelect' })
-    select.vm.$emit('change', 'supervised')
-    await flushPromises()
-
-    expect(wrapper.get('[data-testid="completed-section"]').text()).not.toContain('第1集')
-    expect(wrapper.get('[data-testid="pending-section"]').text()).toContain('待监修项目')
-  })
-
-  it('底部的成就卡片标题跟着模式走（数字本来就跟模式，以前只有标题在骗人）', async () => {
-    setupStore([oneChildWithHalfSupervised()])
-    const wrapper = mountDashboard()
-    await flushPromises()
-
-    expect(wrapper.get('[data-testid="dashboard-month-count"]').text()).toContain('当月嵌字数量')
-
-    wrapper.findComponent({ name: 'AppSelect' }).vm.$emit('change', 'proofread')
-    await flushPromises()
-
-    expect(wrapper.get('[data-testid="dashboard-month-count"]').text()).toContain('当月校对数量')
-    expect(wrapper.get('[data-testid="dashboard-total-count"]').text()).toContain('总校对数量')
-    // 卡片里那行小字以前也写死"嵌字项目数"
-    expect(wrapper.get('[data-testid="dashboard-month-count"]').text()).toContain('校对项目数')
-  })
-
-  it('模式下拉存在且与成就页共用同一个模式（选完两页一致）', async () => {
-    setupStore([oneChildWithHalfSupervised()])
-    const wrapper = mountDashboard()
-    await flushPromises()
-
-    expect(wrapper.find('[data-testid="dashboard-mode-select"]').exists()).toBe(true)
-
-    wrapper.findComponent({ name: 'AppSelect' }).vm.$emit('change', 'supervised')
-    await flushPromises()
-
-    const achievements = useAchievementsStore()
-    expect(achievements.selectedMode).toBe('supervised')
-  })
+beforeEach(()=>push.mockReset())
+describe.each([false,true])('home shared behavior modern=%s', modern=>{
+ it('empty registry offers the real add-project route',async()=>{const w=await setup([],modern);await w.get('[data-testid="add-project-cta"]').trigger('click');expect(push).toHaveBeenCalledWith('/project?add=1')})
+ it('keeps half-finished chapters visible and separates untouched/completed ones',async()=>{
+  const w=await setup(fixture(),modern)
+  expect(w.get('[data-testid="ongoing-section"]').text()).toContain('进行中章节')
+  expect(w.get('[data-testid="ongoing-section"]').text()).toContain('还剩 1 页')
+  expect(w.get('[data-testid="pending-section"]').text()).toContain('待做章节')
+  expect(w.get('[data-testid="completed-section"]').text()).toContain('完成章节')
+ })
+ it('recent work follows visits rather than file dates and opens the chapter',async()=>{
+  const w=await setup(fixture(),modern),cards=w.findAll('[data-testid="recent-project-card"]')
+  expect(cards[0].text()).toContain('待做章节');await cards[0].trigger('click');expect(push).toHaveBeenCalledWith('/project/'+encodeURIComponent('测试漫画')+'/pending')
+ })
+ it('mode switch updates progress lists and monthly achievement totals together',async()=>{
+  const data=fixture();data[0].children[0].psdModeStats={typeset:[],translated:[],proofread:[done,done],supervised:[]}
+  const w=await setup(data,modern);const stats=useAchievementsStore();stats.statistics=[{childId:'working',folderPath:'/work',fileCount:2,completedTimestamps:{typeset:[],translated:[],proofread:[Date.now(),Date.now()],supervised:[]}}]
+  w.findComponent({name:'WorkModeSegments'}).vm.$emit('update:modelValue','proofread');await flushPromises()
+  expect(stats.selectedMode).toBe('proofread');expect(w.get('[data-testid="completed-section"]').text()).toContain('进行中章节')
+  expect(w.get('[data-testid="dashboard-month-count"]').text()).toContain('本月校对完成');expect(stats.currentMonthTotal).toBe(2)
+ })
+ it('completed list dates and order follow statistics dates rather than filesystem dates',async()=>{
+  const data=fixture();data[0].children[0].psdStats=[done];const w=await setup(data,modern);const stats=useAchievementsStore()
+  stats.statistics=['working','done'].map((childId,index)=>({childId,folderPath:'/',fileCount:1,completedTimestamps:{typeset:[new Date(2020+index,0,1).getTime()],translated:[],proofread:[],supervised:[]}}));await flushPromises()
+  const rows=w.get('[data-testid="completed-section"]').findAll('li');expect(rows[0].text()).toContain('完成章节');expect(rows[0].text()).toContain('2021');expect(rows[1].text()).toContain('2020')
+ })
 })

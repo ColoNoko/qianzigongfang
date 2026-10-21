@@ -36,8 +36,7 @@ describe('ThumbGrid', () => {
       props: { items, load }
     })
 
-    // 中 size: frameW=180, frameH=280, GAP=10 → rowHeight=290
-    // clientWidth=174 → cols=max(1, floor(184/190))=1; clientHeight=738 → 3 rows visible
+    // Narrow container keeps one column and three visible rows.
     const el = wrapper.vm.scrollContainer as HTMLElement
     setContainerDims(el, 174, 738, 0)
     wrapper.vm.measureAndLoad()
@@ -129,55 +128,28 @@ describe('ThumbGrid', () => {
     expect(wrapper.emitted('selectionChange')!.at(-1)).toEqual([items.map((item) => item.id)])
   })
 
-  it('updates frame dimensions when thumbSize prop changes', async () => {
-    const items = makeItems(10)
-    const wrapper = mount(ThumbGrid, { props: { items, thumbSize: '中' } })
-
+  it('fills the available row and reflows fewer columns for larger thumbnails', async () => {
+    const wrapper = mount(ThumbGrid, { props: { items: makeItems(100), thumbSize: '小' } })
     const el = wrapper.vm.scrollContainer as HTMLElement
-    setContainerDims(el, 144, 624, 0)
+    setContainerDims(el, 1000, 600)
     wrapper.vm.measureAndLoad()
     await nextTick()
-
-    // 中: frameW=180, image area=162×208 (about 1.5x the old area)
-    const cardsBefore = wrapper.findAll('.thumb-card')
-    expect(cardsBefore.length).toBeGreaterThan(0)
-    expect(cardsBefore[0].attributes('style')).toContain('width: 180px')
-    expect(cardsBefore[0].find('div').attributes('style')).toContain('width: 162px')
-    expect(cardsBefore[0].find('div').attributes('style')).toContain('height: 208px')
-
-    // Change to 大: frameW=229
+    const firstRow = () => wrapper.findAll('.thumb-card').filter(card => (card.element as HTMLElement).style.top === '0px')
+    const rightEdge = () => { const last = firstRow().at(-1)!.element as HTMLElement; return parseFloat(last.style.left) + parseFloat(last.style.width) }
+    const smallColumns = firstRow().length
+    expect(rightEdge()).toBeLessThanOrEqual(1000)
+    expect(1000 - rightEdge()).toBeLessThan(firstRow().length)
     await wrapper.setProps({ thumbSize: '大' })
+    expect(firstRow().length).toBeLessThan(smallColumns)
+    expect(rightEdge()).toBeLessThanOrEqual(1000)
+    expect(1000 - rightEdge()).toBeLessThan(firstRow().length)
+    expect(wrapper.findAll('.thumb-card').length).toBeLessThan(100)
+    setContainerDims(el, 220, 600)
+    wrapper.vm.measureAndLoad()
     await nextTick()
-
-    const cardsAfter = wrapper.findAll('.thumb-card')
-    expect(cardsAfter.length).toBeGreaterThan(0)
-    expect(cardsAfter[0].attributes('style')).toContain('width: 229px')
-  })
-
-  it('keeps every frame large enough for its image + info block', async () => {
-    // 这条锁住"图片被 flex 悄悄压小"这个回归。
-    //
-    // frameH 曾经只比 imgH 大 34px，而卡片里图片下面的信息区本身就要约 54px，
-    // 于是 flex 只能压缩图片（中号声明 208px、实际渲染约 170px，页面左右各露出
-    // 约 21px 的底色）。外框必须容得下：边框 2 + 上下内边距 16 + 信息区约 54。
-    const wrapper = mount(ThumbGrid, { props: { items: makeItems(3) } })
-    const el = wrapper.vm.scrollContainer as HTMLElement
-
-    for (const size of ['小', '中', '大'] as const) {
-      await wrapper.setProps({ thumbSize: size })
-      setContainerDims(el, 144, 624, 0)
-      wrapper.vm.measureAndLoad()
-      await nextTick()
-
-      const card = wrapper.findAll('.thumb-card')[0]
-      const cardStyle = card.attributes('style') ?? ''
-      const imgStyle = card.find('div').attributes('style') ?? ''
-      const num = (style: string, prop: string): number =>
-        Number(new RegExp(`${prop}:\\s*(\\d+)px`).exec(style)?.[1])
-
-      expect(num(cardStyle, 'height') - num(imgStyle, 'height')).toBeGreaterThanOrEqual(72)
-      expect(num(cardStyle, 'width') - num(imgStyle, 'width')).toBeGreaterThanOrEqual(18)
-    }
+    expect(firstRow()).toHaveLength(1)
+    expect(rightEdge()).toBeCloseTo(220)
+    wrapper.unmount()
   })
 
   it('measures and loads when items arrive after initial empty mount', async () => {

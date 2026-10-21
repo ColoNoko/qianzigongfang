@@ -7,6 +7,9 @@ import type { TypesetStatus, WorkMode } from '@shared/types'
 
 export interface ThumbItem {
   id: string
+  revision?: string
+  error?: string
+  fallback?: boolean
   filename: string
   thumbUrl: string | null
   mtimeText: string
@@ -17,10 +20,14 @@ export type ThumbSize = '大' | '中' | '小'
 </script>
 
 <script setup lang="ts">
+import { Button as UiButton } from '@renderer/components/ui/button'
 import { ref, computed, onMounted, onUnmounted, watch, nextTick } from 'vue'
+import StatisticsTimeMenu from '@renderer/features/project/StatisticsTimeMenu.vue'
+import { ContextMenu, ContextMenuTrigger, ContextMenuContent } from './ui/context-menu'
 import { WORK_MODE_LABELS } from '@shared/modes'
 const props = withDefaults(
   defineProps<{
+    childId?: string
     items: ThumbItem[]
     thumbSize?: ThumbSize
     load?: (index: number, item: ThumbItem) => void
@@ -37,6 +44,9 @@ const props = withDefaults(
 const actionLabel = computed(() => `去${WORK_MODE_LABELS[props.mode]}`)
 
 const emit = defineEmits<{
+  (e: 'visible', ids: string[], nearby: string[]): void
+  (e: 'retry', id: string): void
+  (e: 'imageError', id: string, url: string): void
   (e: 'dblclick', id: string): void
   (e: 'action', id: string): void
   (e: 'mark', id: string): void
@@ -46,26 +56,11 @@ const emit = defineEmits<{
 // --- Constants (mirror oldcode thumbnail_grid.py) ---------------------------
 // 间距从 4px 放到 10px：4px 时卡片几乎粘在一起，图与图之间没有任何停顿。
 const GAP = 10
-const MAX_WORKERS = 4
 const BUFFER_ROWS = 2
 const SCROLL_DEBOUNCE_MS = 80
-const FLUSH_DEBOUNCE_MS = 16
 
-const SIZE_MAP: Record<ThumbSize, { frameW: number; frameH: number; imgW: number; imgH: number }> =
-  {
-    // 图片区仍是上一轮的 1.5 倍预设（宽高比不变），但**外框必须容纳得下内容**：
-    //
-    //   frameW = imgW + 18   （2px 边框 + 两侧各 8px 内边距）
-    //   frameH = imgH + 72   （2px 边框 + 16px 内边距 + 信息区约 54px）
-    //
-    // 旧值是 frameW = imgW + 8、frameH = imgH + 34 —— 信息区实际需要约 54px，
-    // 于是 flex 只能压缩图片：中号声明 208px、实际只渲染到约 170px（少 18%），
-    // 页面按 0.7 宽高比 contain 之后左右各露出约 21px 的底色。这就是"卡片挤"的
-    // 真正原因，不是间距问题。改这三个数字前请先量一遍渲染结果。
-    小: { frameW: 143, frameH: 230, imgW: 125, imgH: 158 },
-    中: { frameW: 180, frameH: 280, imgW: 162, imgH: 208 },
-    大: { frameW: 229, frameH: 346, imgW: 211, imgH: 274 }
-  }
+// Minimum widths; distribute remaining row space, as in Comic Manager's auto-fill grid.
+const SIZE_MAP: Record<ThumbSize, number> = { 小: 190, 中: 240, 大: 300 }
 
 // --- Reactive state ---------------------------------------------------------
 const scrollContainer = ref<HTMLElement | null>(null)
@@ -76,21 +71,19 @@ const loadedIndices = ref<Set<number>>(new Set())
 const selectedIds = ref<Set<string>>(new Set())
 const selectionAnchorIndex = ref<number | null>(null)
 
-// AbortController per index — abort when item leaves the buffered range.
-const abortControllers = new Map<number, AbortController>()
-
 let scrollTimer: ReturnType<typeof setTimeout> | null = null
-let flushTimer: ReturnType<typeof setTimeout> | null = null
 let resizeObserver: ResizeObserver | null = null
 
 // --- Computed dimensions ---------------------------------------------------
-const dims = computed(() => SIZE_MAP[props.thumbSize])
-const rowHeight = computed(() => dims.value.frameH + GAP)
-
-const cols = computed(() => {
-  if (clientWidth.value <= 0) return 1
-  return Math.max(1, Math.floor((clientWidth.value + GAP) / (dims.value.frameW + GAP)))
+const cols = computed(() => Math.max(1, Math.floor((clientWidth.value + GAP) / (SIZE_MAP[props.thumbSize] + GAP))))
+const dims = computed(() => {
+  // Round down to prevent the last absolute card crossing the viewport by a subpixel.
+  const frameW = Math.max(1, Math.floor(((clientWidth.value || SIZE_MAP[props.thumbSize]) - (cols.value - 1) * GAP) / cols.value))
+  const imgW = Math.max(1, frameW - 18)
+  const imgH = Math.round(imgW * 1.3)
+  return { frameW, frameH: imgH + 62, imgW, imgH }
 })
+const rowHeight = computed(() => dims.value.frameH + GAP)
 
 const totalRows = computed(() => Math.ceil(props.items.length / Math.max(1, cols.value)))
 const totalHeight = computed(() => totalRows.value * rowHeight.value)
@@ -166,53 +159,24 @@ function measureAndLoad(): void {
   clientHeight.value = scrollContainer.value.clientHeight
   scrollTop.value = scrollContainer.value.scrollTop
 
-  const count = props.items.length
-  if (count === 0) return
-
-  // Abort out-of-range items.
-  const { first: vFirst, last: vLast } = visibleRange.value
-  const c = Math.max(1, cols.value)
-  const firstRow = Math.floor(vFirst / c)
-  const lastRow = vLast >= 0 ? Math.floor(vLast / c) : 0
-  const keepLo = Math.max(0, firstRow - BUFFER_ROWS) * c
-  const keepHi = Math.min(count - 1, (lastRow + BUFFER_ROWS + 1) * c - 1)
-
-  for (const [idx, controller] of abortControllers) {
-    if (idx < keepLo || idx > keepHi) {
-      controller.abort()
-      abortControllers.delete(idx)
-    }
-  }
-
-  // Load newly-visible items up to MAX_WORKERS at a time.
-  if (!props.load) return
-  let loadCount = 0
-  for (let i = vFirst; i <= vLast && loadCount < MAX_WORKERS; i++) {
-    if (i < 0 || i >= count) continue
+  const { first, last } = visibleRange.value
+  const render = renderRange.value
+  const visible = props.items.slice(first, last + 1)
+  const nearby = props.items.slice(render.first, render.last + 1)
+  emit(
+    'visible',
+    visible.map((item) => item.id),
+    nearby.map((item) => item.id)
+  )
+  // Compatibility callback has no concurrency gate; scheduling belongs to the shared service.
+  for (let i = first; i <= last; i++) {
     if (loadedIndices.value.has(i)) continue
-    if (abortControllers.has(i)) continue
-
-    const controller = new AbortController()
-    abortControllers.set(i, controller)
-    const next = new Set(loadedIndices.value)
-    next.add(i)
-    loadedIndices.value = next
-    props.load(i, props.items[i])
-    loadCount++
+    loadedIndices.value.add(i)
+    props.load?.(i, props.items[i])
   }
-
-  // Schedule a flush (placeholder for batching UI updates).
-  if (flushTimer) clearTimeout(flushTimer)
-  flushTimer = setTimeout(() => {
-    // In Vue, reactivity handles UI updates automatically.
-    // This timer exists to mirror the oldcode 16ms flush debounce.
-  }, FLUSH_DEBOUNCE_MS)
 }
-
 function clearLoadState(): void {
   loadedIndices.value = new Set()
-  abortControllers.forEach((c) => c.abort())
-  abortControllers.clear()
 }
 
 // --- Event handlers --------------------------------------------------------
@@ -281,7 +245,8 @@ function handleMark(id: string): void {
 }
 
 function statusLabel(status: TypesetStatus): string {
-  return status === 'done' ? '已嵌字，点击标记为未嵌字' : '待嵌字，点击标记为已嵌字'
+  const label = WORK_MODE_LABELS[props.mode]
+  return status === 'done' ? `已${label}，点击标记为未${label}` : `未${label}，点击标记为已${label}`
 }
 
 function isSelected(id: string): boolean {
@@ -305,11 +270,9 @@ onMounted(() => {
 
 onUnmounted(() => {
   if (scrollTimer) clearTimeout(scrollTimer)
-  if (flushTimer) clearTimeout(flushTimer)
   resizeObserver?.disconnect()
   resizeObserver = null
-  abortControllers.forEach((c) => c.abort())
-  abortControllers.clear()
+  emit('visible', [], [])
 })
 
 // When thumbSize changes, clear loaded state and re-measure.
@@ -322,7 +285,7 @@ watch(
 )
 
 watch(
-  () => props.items.map((item) => item.id).join('\n'),
+  () => props.items.map((item) => [item.id, item.revision].join(':')).join('\n'),
   () => {
     const validIds = new Set(props.items.map((item) => item.id))
     const nextSelection = [...selectedIds.value].filter((id) => validIds.has(id))
@@ -341,15 +304,16 @@ defineExpose({ measureAndLoad, scrollContainer, loadedIndices, selectedIds })
 <template>
   <div
     ref="scrollContainer"
-    class="h-full overflow-auto bg-app-bg"
+    class="h-full min-w-0 overflow-x-hidden overflow-y-auto bg-app-bg"
+    style="scrollbar-gutter: stable"
+    data-testid="thumb-grid"
     tabindex="0"
     @scroll="onScroll"
     @keydown="handleKeydown"
   >
     <div :style="{ height: totalHeight + 'px', position: 'relative' }">
+      <ContextMenu v-for="vi in visibleItems" :key="vi.item.id"><ContextMenuTrigger as-child>
       <div
-        v-for="vi in visibleItems"
-        :key="vi.item.id"
         class="thumb-card group absolute flex select-none flex-col items-center rounded-[var(--radius-card)] border border-border bg-card-bg p-2 shadow-[var(--shadow-card)] transition-[transform,box-shadow,border-color,background-color] duration-200 ease-out hover:-translate-y-0.5 hover:border-border-strong hover:shadow-[var(--shadow-card-hover)]"
         :class="
           isSelected(vi.item.id)
@@ -370,7 +334,7 @@ defineExpose({ measureAndLoad, scrollContainer, loadedIndices, selectedIds })
              每张卡片因此都是一个蓝色块；强调色应该留给"可交互"，不该当背景。
              这必须是卡片里的第一个 div —— ThumbGrid.spec 靠它读内联宽高。 -->
         <div
-          class="relative flex items-center justify-center overflow-hidden rounded-md bg-media-bg"
+          class="relative flex shrink-0 items-center justify-center overflow-hidden rounded-md bg-media-bg"
           :style="{ width: dims.imgW + 'px', height: dims.imgH + 'px' }"
         >
           <img
@@ -378,13 +342,25 @@ defineExpose({ measureAndLoad, scrollContainer, loadedIndices, selectedIds })
             :src="vi.item.thumbUrl"
             class="max-w-full max-h-full object-contain"
             :alt="vi.item.filename"
+            @error="emit('imageError', vi.item.id, vi.item.thumbUrl!)"
           />
           <div
             v-else
             class="flex h-full w-full items-center justify-center text-text-tertiary text-xs"
           >
-            ...
+            {{ vi.item.error ? '预览不可用' : '加载中…' }}
           </div>
+
+          <UiButton variant="ghost" size="sm"
+            v-if="vi.item.error || vi.item.fallback"
+            type="button"
+            class="absolute inset-x-1 bottom-1"
+            :title="vi.item.error"
+            @click.stop="emit('retry', vi.item.id)"
+            @dblclick.stop
+          >
+            {{ vi.item.fallback ? '原图代替 · 重试 PSD' : '重新加载' }}
+          </UiButton>
 
           <!-- 选中角标。纯 SVG，不带文字节点：ThumbGrid.spec 会读整棵树的 text()。 -->
           <span
@@ -406,43 +382,22 @@ defineExpose({ measureAndLoad, scrollContainer, loadedIndices, selectedIds })
           </span>
         </div>
 
-        <!-- Info area: 名称 + 日期一行，状态点 + 动作一行（三行改两行，省下的高度还给图片）。 -->
-        <div class="mt-2 flex w-full min-w-0 items-center justify-between gap-1.5">
-          <span class="min-w-0 flex-1 truncate text-[12px] leading-4 text-text-primary">
-            {{ vi.item.filename }}
-          </span>
-          <span class="shrink-0 text-[11px] leading-4 tabular-nums text-text-tertiary">
-            {{ vi.item.mtimeText }}
-          </span>
-        </div>
-        <div class="mt-1.5 flex w-full items-center justify-between">
-          <button
-            v-if="vi.item.status !== 'none'"
-            class="thumb-status flex h-5 w-5 items-center justify-center rounded-full transition-colors hover:bg-surface-pressed"
-            :aria-label="statusLabel(vi.item.status)"
-            @click.stop="handleMark(vi.item.id)"
-          >
-            <!-- 已完成用 --done（樱花粉）：它和"可点击"的主色在色相上分开，
-                 一眼就能扫出一话里哪些做完了。 -->
-            <span
-              class="inline-block h-3 w-3 rounded-full"
-              :class="
-                vi.item.status === 'done'
-                  ? 'bg-done'
-                  : 'border-[1.5px] border-border-strong bg-transparent'
-              "
-            />
-          </button>
-          <span v-else class="h-5 w-5" aria-hidden="true" />
-
-          <button
-            class="thumb-action flex h-5 shrink-0 items-center rounded-full border border-border bg-card-bg px-2 text-[11px] font-medium leading-none text-accent transition-colors hover:border-accent hover:bg-primary-soft"
-            @click.stop="handleAction(vi.item.id)"
-          >
-            {{ actionLabel }}
-          </button>
+        <div class="mt-2 flex w-full min-w-0 shrink-0 items-center gap-1.5">
+          <div class="min-w-0 flex-1">
+            <div class="truncate text-xs leading-5 text-foreground" :title="vi.item.filename">{{ vi.item.filename }}</div>
+            <div class="truncate text-[11px] leading-4 tabular-nums text-muted-foreground" :title="vi.item.mtimeText">{{ vi.item.mtimeText }}</div>
+          </div>
+          <UiButton v-if="vi.item.status !== 'none'" variant="ghost" size="icon-sm"
+            class="thumb-status size-8 shrink-0 rounded-md" :aria-label="statusLabel(vi.item.status)"
+            :aria-pressed="vi.item.status === 'done'" :title="statusLabel(vi.item.status)"
+            @click.stop="handleMark(vi.item.id)" @dblclick.stop>
+            <svg class="!size-[10px]" viewBox="0 0 10 10" aria-hidden="true" :class="vi.item.status === 'done' ? 'text-primary' : 'text-muted-foreground'"><circle cx="5" cy="5" r="4" :fill="vi.item.status === 'done' ? 'currentColor' : 'none'" stroke="currentColor" stroke-width="1" :stroke-dasharray="vi.item.status === 'done' ? undefined : '1 1'" /></svg>
+          </UiButton>
+          <UiButton variant="outline" size="sm" class="thumb-action shrink-0 px-2"
+            @click.stop="handleAction(vi.item.id)" @dblclick.stop>{{ actionLabel }}</UiButton>
         </div>
       </div>
+      </ContextMenuTrigger><ContextMenuContent v-if="childId"><StatisticsTimeMenu :target="{ childId, paths: isSelected(vi.item.id) ? [...selectedIds] : [vi.item.id] }" :mode="mode" /></ContextMenuContent></ContextMenu>
     </div>
   </div>
 </template>

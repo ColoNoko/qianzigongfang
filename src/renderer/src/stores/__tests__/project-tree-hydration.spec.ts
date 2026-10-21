@@ -139,9 +139,7 @@ describe('加载时保留职责', () => {
   })
 
   it('首页：同一棵树也要带回职责（它同样会把树写回去）', async () => {
-    window.comicType.projectGetTree = vi
-      .fn()
-      .mockResolvedValue(treeWith({ duties: ['proofread'] }))
+    window.comicType.projectGetTree = vi.fn().mockResolvedValue(treeWith({ duties: ['proofread'] }))
     const projectStore = useProjectStore()
 
     await projectStore.loadProjects()
@@ -150,9 +148,11 @@ describe('加载时保留职责', () => {
   })
 
   it('垃圾值 / 重复 / 超过两个都被洗掉；一个都没有时是 undefined（不是空数组）', async () => {
-    window.comicType.projectGetTree = vi.fn().mockResolvedValue(
-      treeWith({ duties: ['  ', 42, 'proofread', 'proofread', 'nope', 'typeset', 'supervised'] })
-    )
+    window.comicType.projectGetTree = vi
+      .fn()
+      .mockResolvedValue(
+        treeWith({ duties: ['  ', 42, 'proofread', 'proofread', 'nope', 'typeset', 'supervised'] })
+      )
     const workspace = useProjectWorkspace()
 
     await workspace.loadParents()
@@ -163,5 +163,46 @@ describe('加载时保留职责', () => {
     const empty = useProjectWorkspace()
     await empty.loadParents()
     expect(empty.parents[0].duties).toBeUndefined()
+  })
+})
+
+/**
+ * 子项目上的字段同样不许丢（2026-10-05，R1 的内容指纹）。
+ *
+ * 父级字段栽过两次（duties / sourceRoots），这条把**子项目**也钉住：
+ * `contentFingerprint` 是"改名认领"的比对基准，丢了就再也认不回改名后的那一话。
+ */
+describe('子项目字段：内容指纹必须原样带过去（R1）', () => {
+  function treeWithChildField(): unknown[] {
+    return [
+      {
+        id: 'p1',
+        title: '搬砖',
+        lastMtimeMs: 0,
+        children: [
+          {
+            id: 'c1',
+            parentTitle: '搬砖',
+            folderPath: 'D:\\漫画\\搬砖\\无\\第1集',
+            chapterNumber: '1',
+            projectTitle: '第1话',
+            lastMtimeMs: 0,
+            contentFingerprint: 'abc123'
+          }
+        ]
+      }
+    ]
+  }
+
+  it('两个 store 的加载路径都要把 contentFingerprint 带回来', async () => {
+    window.comicType.projectGetTree = vi.fn().mockResolvedValue(treeWithChildField())
+
+    const workspace = useProjectWorkspace()
+    await workspace.loadParents()
+    expect(workspace.parents[0].children[0].contentFingerprint).toBe('abc123')
+
+    const projectStore = useProjectStore()
+    await projectStore.loadProjects()
+    expect(projectStore.projects[0].children[0].contentFingerprint).toBe('abc123')
   })
 })

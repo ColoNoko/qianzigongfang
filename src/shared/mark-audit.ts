@@ -21,6 +21,7 @@ import { WORK_MODE_LABELS } from './modes'
 export type MarkAuditKind = 'mark' | 'migrate' | 'undo' | 'restore'
 
 export type MarkAuditSource =
+  | 'statistics-time'
   | 'card'
   | 'toolbar'
   | 'viewer'
@@ -111,6 +112,7 @@ export function didEntryChange(entry: MarkAuditEntry): boolean {
 
 /** 台账条目的可读文案（界面与日志共用，别在两处各写一套）。 */
 export function summarizeMarkOperation(operation: MarkAuditOperation): string {
+  if (operation.source === 'statistics-time') return `${operation.kind === 'undo' ? '已撤销：' : ''}调整统计时间（${operation.fileCount} 个文件）`
   const modeLabel = operation.mode ? WORK_MODE_LABELS[operation.mode] : ''
   const cards = `${operation.fileCount} 个文件（${operation.children.length} 话）`
   switch (operation.kind) {

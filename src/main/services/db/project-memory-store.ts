@@ -1,3 +1,4 @@
+import { syncStatisticsTime } from './statistics-time-store'
 import { getDatabase } from './connection'
 import type {
   ProjectMemory,
@@ -5,7 +6,7 @@ import type {
   ProjectMemoryStatusUpdate
 } from '@shared/ipc-api'
 import {
-  createEmptyModeStatus,
+  storedModeStatus,
   modeStatusToLegacyStatus,
   normalizeModeStatus,
   normalizeModeTimestamps
@@ -52,18 +53,7 @@ export async function getStoredProjectMemory(childId: string): Promise<ProjectMe
   }>
   const files: Record<string, ProjectMemoryFileStatus> = {}
   for (const row of rows) {
-    let modes = createEmptyModeStatus()
-    if (row.mode_statuses_json) {
-      try {
-        modes = normalizeModeStatus(JSON.parse(row.mode_statuses_json))
-      } catch {
-        // 损坏的 JSON 回退为空状态。
-      }
-    }
-    // 旧数据没有 JSON 时，用旧 status 推导 typeset。
-    if (!row.mode_statuses_json) {
-      modes.typeset = row.status === 'done'
-    }
+    const modes = storedModeStatus(row.mode_statuses_json, row.status)
 
     let modeTimestamps = {}
     if (row.mode_timestamps_json) {
@@ -128,27 +118,22 @@ export async function setStoredProjectMemoryStatuses(
         mode_timestamps_json = excluded.mode_timestamps_json
     `)
     const existingModesStatement = database.prepare(`
-      SELECT mode_statuses_json, mode_timestamps_json, mtime_ms
+      SELECT mode_statuses_json, mode_timestamps_json, mtime_ms, status, updated_at
       FROM project_memory_files
       WHERE child_id = ? AND path_key = ?
     `)
     for (const update of updates) {
-      let existingModes = createEmptyModeStatus()
       let existingTimestamps: Record<string, number> = {}
       const existing = existingModesStatement.get(childId, update.pathKey) as
         | {
             mode_statuses_json: string | null
             mode_timestamps_json: string | null
+            status: string
+            updated_at: number
             mtime_ms: number | null
           }
         | undefined
-      if (existing?.mode_statuses_json) {
-        try {
-          existingModes = normalizeModeStatus(JSON.parse(existing.mode_statuses_json))
-        } catch {
-          // 损坏的 JSON 回退为空状态。
-        }
-      }
+      const existingModes = storedModeStatus(existing?.mode_statuses_json, existing?.status)
       if (existing?.mode_timestamps_json) {
         try {
           existingTimestamps = normalizeModeTimestamps(
@@ -156,6 +141,13 @@ export async function setStoredProjectMemoryStatuses(
           ) as Record<string, number>
         } catch {
           // 损坏的 JSON 回退为空。
+        }
+      }
+
+      // Freeze the legacy fallback before this row's updated_at changes.
+      for (const mode of Object.keys(existingModes) as WorkMode[]) {
+        if (existingModes[mode] && !existingTimestamps[mode] && existing?.updated_at) {
+          existingTimestamps[mode] = existing.updated_at
         }
       }
 
@@ -200,6 +192,8 @@ export async function setStoredProjectMemoryStatuses(
         JSON.stringify(modes),
         JSON.stringify(modeTimestamps)
       )
+
+      syncStatisticsTime(database, childId, update.pathKey, update.path, modes, modeTimestamps, now)
 
       if (audit) {
         const entry: MarkAuditEntry = {

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { Skeleton } from "./ui/skeleton"
 // LoadingSkeleton — shimmer placeholder blocks shown while data is loading
 // (e.g. during slow-NAS IPC calls). Renders a `rows` x `columns` grid of
 // pulsing grey blocks using Tailwind tokens (bg-card-bg-hover + animate-pulse).
@@ -29,10 +30,9 @@ const colList = computed(() => Array.from({ length: props.columns }, (_, i) => i
       :key="`skel-row-${r}`"
       class="flex gap-3"
     >
-      <div
-        v-for="c in colList"
+      <Skeleton v-for="c in colList"
         :key="`skel-${r}-${c}`"
-        class="h-10 flex-1 rounded-badge bg-media-bg animate-pulse"
+        class="h-10 flex-1"
         data-testid="skeleton-block"
       />
     </div>

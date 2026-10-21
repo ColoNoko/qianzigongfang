@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { Button as UiButton } from '@renderer/components/ui/button'
 import { onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
 import type { LabelPlusPreviewPage, LabelPlusPreviewSessionInfo } from '@shared/labelplus-import'
@@ -102,9 +103,9 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
         </p>
       </div>
       <div class="flex shrink-0 items-center gap-2">
-        <button type="button" class="rounded-badge border border-border px-3 py-1.5 text-xs hover:bg-card-bg-hover" :disabled="index <= 0" @click="previous">上一页</button>
-        <button type="button" class="rounded-badge border border-border px-3 py-1.5 text-xs hover:bg-card-bg-hover" :disabled="!session || index >= session.items.length - 1" @click="next">下一页</button>
-        <button type="button" class="rounded-badge bg-accent px-3 py-1.5 text-xs text-text-on-accent transition-colors hover:bg-primary-hover active:bg-primary-active" @click="closeWindow">关闭</button>
+        <UiButton variant="outline" size="sm" type="button" class="" :disabled="index <= 0" @click="previous">上一页</UiButton>
+        <UiButton variant="outline" size="sm" type="button" class="" :disabled="!session || index >= session.items.length - 1" @click="next">下一页</UiButton>
+        <UiButton variant="default" size="sm" type="button" class="transition-colors" @click="closeWindow">关闭</UiButton>
       </div>
     </header>
 

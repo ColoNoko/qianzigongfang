@@ -1,80 +1,106 @@
 <script setup lang="ts">
-// 「时间线」抽屉（2026-10-03）—— 进度页工具条上那枚按钮点开，从**右侧**滑出。
-//
-// 为什么是抽屉不是弹窗：它跟列表是**同一件事的两个视角**（欠账 / 回顾），
-// 遮罩下留着列表能让人随时切回来；而项目里既有的弹窗（台账 / 备份管理）都是"停下来干活"的模态，
-// 语义不同。视觉语言仍照它们那一套（overlay + 卡片 + header + 可滚动主体），零新造。
-//
-// ⚠️ 数据**不从抽屉自己拉**：`events` 由进度页算好传进来（单一数据源 + 可单测），
-// 抽屉只负责画。
-// ⚠️ 徽标写的是「最近 N 次」不是「共 N 次」：进度页只传最近 80 条（真实库上标记
-// 上千条，全量渲染没必要），写成"共"就是假话。
-//
-// ⚠️ 动效**不用 `<Transition>`**，用 `styles/index.css` 里那两个 animation 类
-// （与页面淡入 `page-in` 同一套写法与 token）。原因见那边的注释：
-// 早期版本把位移加在整个遮罩上，结果"背景 + 面板"一起滑 —— 中途左边会露出一条
-// 没压暗的区域，看起来就是一道硬边（用户 2026-10-03 截图反馈的"切换痕迹"）。
-// 现在：① 背景只做淡入（`drawer-backdrop-in`，快）② 面板只做位移（`drawer-panel-in`，稍慢）。
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
-import { WORK_MODE_LABELS } from '@shared/modes'
-import { timelineDayLabel, type ProgressTimelineEvent } from '@shared/progress'
+import { STATISTICS_TIME_LABELS } from '@shared/statistics-time'
+import { Sheet, SheetContent, SheetTitle } from '@renderer/components/ui/sheet'
+import { Button as UiButton } from '@renderer/components/ui/button'
+/**
+ * 「时间线」抽屉（2026-10-05 从并行分支 T8 移植的**分组版**）。
+ *
+ * 与旧版的差别只有一件事，但观感差很多：旧版是"一条 = 某天 × 某话 × 某职责"的**摊平列表**
+ * （一本漫画一天做了 12 话就是 12 行）；现在按 **某天 × 某漫画 × 某职责** 合并成一组，
+ * 组里用原生 `<details>/<summary>` 展开各话明细 —— 例如「老师的人偶 / 监修完成 · 合集 12 集 · 130 张」。
+ *
+ * 口径与分组全在 `@shared/progress`（`groupTimelineEvents`，纯函数、有单测）；
+ * 抽屉只负责画。数据**不从抽屉自己拉**（`events` 由进度页算好传进来）。
+ * 职责四色（蓝嵌字 / 绿翻译 / 琥珀校对 / 紫监修）配「嵌、翻、校、监」文字标志 ——
+ * 不靠颜色单独区分；深浅主题各有一套可读色。
+ */
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { WORK_MODES, WORK_MODE_LABELS, WORK_MODE_SHORT_LABELS } from '@shared/modes'
+import {
+  groupTimelineEvents,
+  timelineDayLabel,
+  type ProgressTimelineEvent,
+  type ProgressTimelineGroup
+} from '@shared/progress'
+import InfoHint from '@renderer/components/InfoHint.vue'
 
 const props = withDefaults(
   defineProps<{
     open?: boolean
     events: ProgressTimelineEvent[]
-    /** 一条事件都没有时的说明。 */
     emptyHint?: string
   }>(),
   { open: false, emptyHint: '还没有任何标记记录。' }
 )
-
 const emit = defineEmits<{ (e: 'close'): void }>()
-
-/** 只算一次"现在"，避免同一屏里两条事件各算各的（跨零点会打架）。 */
 const now = ref(Date.now())
-/**
- * ⚠️ 日期文案走 `@shared/progress` 的 `timelineDayLabel`（按**自然日**算）——
- * 与数据分桶共用同一处"一天从哪儿开始"，否则会出现"分在两个桶里、却都显示今天"。
- */
-const rows = computed(() =>
-  props.events.map((event) => ({ ...event, day: timelineDayLabel(event.at, now.value) }))
+const panel = ref<HTMLElement>()
+let opener: HTMLElement | null = null
+const groups = computed(() => groupTimelineEvents(props.events))
+const days = computed(() => {
+  const result = new Map<number, ProgressTimelineGroup[]>()
+  for (const group of groups.value) {
+    const rows = result.get(group.day) ?? []
+    rows.push(group)
+    result.set(group.day, rows)
+  }
+  return [...result].map(([at, rows]) => ({ at, rows, label: timelineDayLabel(at, now.value) }))
+})
+watch(
+  () => props.open,
+  async (open) => {
+    if (open) {
+      now.value = Date.now()
+      opener = document.activeElement instanceof HTMLElement ? document.activeElement : null
+      await nextTick()
+      panel.value
+        ?.querySelector<HTMLButtonElement>('[data-testid="progress-timeline-close"]')
+        ?.focus()
+    } else opener?.focus()
+  },
+  { immediate: true }
 )
-
 function onKeydown(event: KeyboardEvent): void {
+  if (!props.open) return
   if (event.key === 'Escape') emit('close')
+  if (event.key !== 'Tab') return
+  const controls = [
+    ...(panel.value?.querySelectorAll<HTMLElement>('button, summary, [tabindex="0"]') ?? [])
+  ].filter((element) => element.getClientRects().length > 0)
+  const first = controls[0],
+    last = controls.at(-1)
+  if (event.shiftKey && document.activeElement === first) {
+    event.preventDefault()
+    last?.focus()
+  } else if (!event.shiftKey && document.activeElement === last) {
+    event.preventDefault()
+    first?.focus()
+  }
 }
-
 onMounted(() => window.addEventListener('keydown', onKeydown))
-onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
+onBeforeUnmount(() => {
+  window.removeEventListener('keydown', onKeydown)
+  if (props.open) opener?.focus()
+})
 </script>
 
 <template>
-  <div
-    v-if="open"
-    class="drawer-backdrop-in fixed inset-0 z-50 flex justify-end bg-black/40"
-    data-testid="progress-timeline-overlay"
-    @click.self="emit('close')"
-  >
-    <div
-      class="drawer-panel-in flex h-full w-[380px] max-w-[92vw] flex-col border-l border-border bg-card-bg text-text-primary shadow-[var(--shadow-3)]"
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby="progress-timeline-title"
+  <Sheet :open="true" @update:open="!$event && (emit('close'))" v-if="open">
+    <SheetContent
+      ref="panel"
+      class="drawer-panel-in timeline-panel flex h-full w-[480px] max-w-[92vw] flex-col border-l border-border bg-card-bg text-text-primary shadow-[var(--shadow-3)]"
       data-testid="progress-timeline-drawer"
-    >
-      <header class="flex items-center gap-3 border-b border-border px-5 py-3">
-        <h2 id="progress-timeline-title" class="text-[15px] font-semibold tracking-tight">
-          时间线
-        </h2>
-        <span
-          class="shrink-0 rounded-full bg-media-bg px-2 py-0.5 text-[11px] leading-none text-text-tertiary"
+     :show-close="false" :aria-describedby="undefined">
+      <header class="flex items-center gap-2 border-b border-border px-5 py-3">
+        <SheetTitle class="text-[15px] font-semibold">时间线</SheetTitle>
+        <InfoHint label="时间线统计说明"
+          >同一天、同一漫画、同一职责合并展示，点击记录展开章节明细。张数按所选统计日期归属汇总；合集集数表示当天涉及的章节数，不代表这些章节已全部完成。实线连接当日记录，虚线分隔日期。最多显示最近
+          80 组。</InfoHint
         >
-          最近 {{ events.length }} 次
-        </span>
-        <button
+        <span class="text-xs text-text-secondary">最近 {{ groups.length }} 组</span>
+        <UiButton variant="ghost" size="sm"
           type="button"
-          class="ml-auto flex h-7 w-7 shrink-0 items-center justify-center rounded-badge text-text-tertiary transition-colors hover:bg-card-bg-hover hover:text-text-primary"
+          class="ml-auto flex w-7 shrink-0 items-center justify-center transition-colors"
           aria-label="关闭"
           data-testid="progress-timeline-close"
           @click="emit('close')"
@@ -85,44 +111,208 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
             fill="none"
             stroke="currentColor"
             stroke-width="2"
-            stroke-linecap="round"
-            stroke-linejoin="round"
+            aria-hidden="true"
           >
             <path d="M6 6l12 12M18 6L6 18" />
           </svg>
-        </button>
+        </UiButton>
       </header>
-
+      <div
+        class="flex flex-wrap gap-x-4 gap-y-2 border-b border-border px-5 py-3 text-xs"
+        aria-label="职责图例"
+      >
+        <span
+          v-for="mode in WORK_MODES"
+          :key="mode"
+          :data-mode="mode"
+          class="timeline-role flex items-center gap-1.5"
+        >
+          <span class="role-mini" aria-hidden="true">{{ WORK_MODE_SHORT_LABELS[mode] }}</span
+          >{{ WORK_MODE_LABELS[mode] }}
+        </span>
+      </div>
       <div class="min-h-0 flex-1 overflow-y-auto px-5 py-4" data-testid="progress-timeline-list">
-        <p v-if="rows.length === 0" class="py-8 text-center text-[12px] text-text-tertiary">
+        <p v-if="!days.length" class="py-8 text-center text-sm text-text-secondary">
           {{ emptyHint }}
         </p>
-
-        <div v-else class="flex flex-col gap-3">
-          <div
-            v-for="(row, index) in rows"
-            :key="`${row.at}-${row.parentTitle}-${row.chapterNumber}-${row.mode}-${index}`"
-            class="flex items-start gap-2.5"
-            data-testid="progress-timeline-item"
-          >
-            <span
-              class="mt-1.5 h-2 w-2 shrink-0 rounded-full"
-              :class="index === 0 ? 'bg-accent' : 'bg-border-strong'"
-              aria-hidden="true"
-            />
-            <span class="w-14 shrink-0 text-[11px] leading-5 text-text-tertiary">
-              {{ row.day }}
-            </span>
-            <span class="min-w-0 flex-1 text-[12px] leading-5">
-              <span class="font-medium text-text-primary">{{ row.parentTitle }}</span>
-              <span class="text-text-secondary"> · {{ row.chapterNumber }}</span>
-              <span class="text-text-secondary">
-                · {{ WORK_MODE_LABELS[row.mode] }}完成 {{ row.fileCount }} 张
-              </span>
-            </span>
+        <section v-for="day in days" :key="day.at" class="timeline-day" :aria-label="day.label">
+          <h3 class="mb-2 flex items-center gap-2 text-xs font-semibold text-text-secondary">
+            <span class="day-node" aria-hidden="true" />{{ day.label }}
+            <span class="font-normal text-text-tertiary">{{
+              new Date(day.at).toLocaleDateString('zh-CN')
+            }}</span>
+          </h3>
+          <div class="timeline-track">
+            <details
+              v-for="row in day.rows"
+              :key="row.key"
+              class="timeline-record timeline-role"
+              :data-mode="row.mode"
+              data-testid="progress-timeline-item"
+            >
+              <summary class="timeline-summary">
+                <span class="role-node" aria-hidden="true">{{
+                  WORK_MODE_SHORT_LABELS[row.mode]
+                }}</span>
+                <span class="sr-only">{{ day.label }} </span>
+                <span class="min-w-0 flex-1">
+                  <span class="block break-words text-sm font-semibold text-text-primary">{{
+                    row.parentTitle
+                  }}</span>
+                  <span class="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
+                    <span class="role-label">{{ WORK_MODE_LABELS[row.mode] }}完成</span>
+                    <span class="text-text-secondary">{{
+                      row.chapters.length > 1
+                        ? `合集 ${row.chapters.length} 集`
+                        : row.chapters[0].chapterNumber
+                    }}</span>
+                    <span class="font-semibold tabular-nums text-text-primary"
+                      >{{ row.fileCount }} 张</span
+                    >
+                  </span>
+                </span>
+                <svg
+                  class="timeline-chevron"
+                  viewBox="0 0 16 16"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.5"
+                  aria-hidden="true"
+                >
+                  <path d="m6 3 5 5-5 5" />
+                </svg>
+              </summary>
+              <ul class="chapter-details" aria-label="章节明细">
+                <li
+                  v-for="(chapter, index) in row.chapters"
+                  :key="chapter.childId ?? index"
+                  class="flex min-w-0 justify-between gap-3 py-1 text-xs"
+                >
+                  <span class="break-words text-text-secondary">{{ chapter.chapterNumber }}<span class="ml-2 text-[10px] text-muted-foreground">{{ chapter.timeSources?.map(source => STATISTICS_TIME_LABELS[source]).join(' / ') }}{{ chapter.chapterCompleted ? ' · 本话完成' : '' }}</span></span>
+                  <span class="shrink-0 tabular-nums text-text-primary"
+                    >{{ chapter.fileCount }} 张</span
+                  >
+                </li>
+              </ul>
+            </details>
           </div>
-        </div>
+        </section>
       </div>
-    </div>
-  </div>
+    </SheetContent>
+  </Sheet>
 </template>
+
+<style scoped>
+/* 四色取自 tokens.css 的 `--role-*`（2026-10-05）：侧栏的职责胶囊要用同一套色，
+   所以色值收成 token、这里只留"哪个模式用哪个 token"。
+   日/夜两档由 token 自己切换 —— 原来那 4 条 `:global([data-theme='dark'] ...)` 覆盖随之删掉。 */
+.timeline-role {
+  --role-color: var(--role-supervised);
+}
+.timeline-role[data-mode='typeset'] {
+  --role-color: var(--role-typeset);
+}
+.timeline-role[data-mode='translated'] {
+  --role-color: var(--role-translated);
+}
+.timeline-role[data-mode='proofread'] {
+  --role-color: var(--role-proofread);
+}
+.role-mini,
+.role-node {
+  color: var(--role-color);
+  border: 1px solid currentColor;
+  background: var(--card-bg);
+  font-weight: 700;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+/* ⚠️ 圆角一律走 token（2026-10-07）：这里是全仓最后一处 scoped 字面量圆角。
+   四个里三个有等价 token（8px = --radius-md，6px = --radius-badge），
+   19px 的小徽标从 5px 归到 --radius-badge(6px)（差 1px，肉眼不可分）。
+   `border-radius: 50%` 保留 —— 那是"画成圆"的几何，不是圆角档位，没有对应 token。 */
+.role-mini {
+  width: 19px;
+  height: 19px;
+  border-radius: var(--radius-badge);
+  font-size: 10px;
+}
+.role-node {
+  position: absolute;
+  left: -39px;
+  top: 8px;
+  width: 27px;
+  height: 27px;
+  border-radius: var(--radius-md);
+  font-size: 12px;
+}
+.role-label {
+  color: var(--role-color);
+  font-weight: 600;
+}
+.day-node {
+  width: 9px;
+  height: 9px;
+  margin-left: 9px;
+  margin-right: 10px;
+  border: 2px solid var(--text-tertiary);
+  /* 见文件上方那段注释：50% 是"画成圆"，不归圆角档位管辖。 */
+  border-radius: 50%;
+  background: var(--card-bg);
+}
+.timeline-day + .timeline-day {
+  position: relative;
+  margin-top: 16px;
+}
+.timeline-day + .timeline-day::before {
+  content: '';
+  position: absolute;
+  left: 13px;
+  top: -16px;
+  height: 12px;
+  border-left: 1px dashed var(--border-strong);
+}
+.timeline-track {
+  margin-left: 13px;
+  padding-left: 24px;
+  border-left: 2px solid var(--border-strong);
+}
+.timeline-record {
+  position: relative;
+  padding-bottom: 4px;
+}
+.timeline-summary {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 8px;
+  border-radius: var(--radius-badge);
+  list-style: none;
+  cursor: pointer;
+}
+.timeline-summary::-webkit-details-marker {
+  display: none;
+}
+.timeline-summary:hover {
+  background: var(--card-bg-hover);
+}
+.timeline-summary:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.timeline-chevron {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+  color: var(--text-tertiary);
+}
+.timeline-record[open] .timeline-chevron {
+  transform: rotate(90deg);
+}
+.chapter-details {
+  margin: 0 8px;
+  padding: 0 0 2px 12px;
+  border-left: 1px dashed var(--role-color);
+}
+</style>

@@ -1,3 +1,5 @@
+import { resetThumbnailService } from './services/thumbnails'
+import { previewCache } from './services/previews'
 import { createApp } from 'vue'
 import { createPinia } from 'pinia'
 import App from './App.vue'
@@ -129,8 +131,9 @@ async function resolveStartupRoute(): Promise<void> {
   await router.isReady()
 
   const workspace = useProjectWorkspace(pinia)
-  const [rawRecentIds] = await Promise.all([
+  const [rawRecentIds, rawStartupPage] = await Promise.all([
     window.comicType.storeGet('recentProjectIds'),
+    window.comicType.storeGet('ui.startupPage'),
     workspace.loadParents()
   ])
   const recentChildIds = Array.isArray(rawRecentIds)
@@ -138,6 +141,7 @@ async function resolveStartupRoute(): Promise<void> {
     : []
 
   const path = resolveStartupPath({
+    startupPage: rawStartupPage === 'project' ? 'project' : 'home',
     routeName: router.currentRoute.value.name as string | undefined,
     recentChildIds,
     parents: workspace.parents
@@ -177,3 +181,8 @@ void useSettingsStore(pinia).loadSettings()
 
 // Refresh achievements quietly every five minutes while the app is visible.
 useAchievementsStore(pinia).startSilentRefresh()
+
+window.addEventListener('beforeunload', () => {
+  previewCache.destroy()
+  resetThumbnailService()
+})

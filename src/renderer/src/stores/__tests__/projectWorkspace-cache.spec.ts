@@ -4,6 +4,7 @@ import { createPinia, setActivePinia } from 'pinia'
 import { psdStatsFromPairs, useProjectWorkspace } from '../projectWorkspace'
 import type { ChildProject, ChildProjectScan, ParentProject } from '@shared/types'
 import type { DirEntry } from '@shared/ipc-api'
+import { useSettingsStore } from '../settings'
 import { computeProgress } from '@shared/status'
 
 /** Build a ChildProject with sensible defaults. */
@@ -50,6 +51,7 @@ function mockComicType(opts: {
   projectReorderParents?: ReturnType<typeof vi.fn>
   projectGetTree?: ReturnType<typeof vi.fn>
   projectSaveTree?: ReturnType<typeof vi.fn>
+  projectSaveChanges?: ReturnType<typeof vi.fn>
   projectSaveProgress?: ReturnType<typeof vi.fn>
 }): void {
   window.comicType = {
@@ -66,6 +68,9 @@ function mockComicType(opts: {
     storeSet: opts.storeSet ?? vi.fn(),
     projectGetTree: opts.projectGetTree ?? vi.fn().mockResolvedValue([]),
     projectSaveTree: opts.projectSaveTree ?? vi.fn().mockResolvedValue(undefined),
+    // 默认：忠实合并（返回 after 本身）—— saveChild 现在采纳主进程返回的权威树。
+    projectSaveChanges:
+      opts.projectSaveChanges ?? vi.fn(async (_before, after) => structuredClone(after)),
     projectSaveProgress: opts.projectSaveProgress ?? vi.fn().mockResolvedValue(undefined),
     projectDeleteChildren: opts.projectDeleteChildren ?? vi.fn().mockResolvedValue(undefined),
     projectRenameParent: opts.projectRenameParent ?? vi.fn().mockResolvedValue(undefined),
@@ -257,6 +262,20 @@ describe('useProjectWorkspace — deleteChild persistence', () => {
 })
 
 describe('useProjectWorkspace — import and parent management', () => {
+  it('batch import applies the shared parser to Chinese chapters and page-range suffixes', async () => {
+    useSettingsStore().defaultImportDuties = ['translated','proofread']
+    const names = ['第二话xxxx', '第十二话 完', '2025-10-02 第三话 完', '姊烦10.1 0101~0110']
+    mockComicType({
+      projectGetTree: vi.fn().mockResolvedValue([]),
+      listDir: vi.fn().mockResolvedValue(names.map(name => ({ name, isDirectory: true, absPath: `/library/漫画/${name}` }))),
+      scanChildProject: vi.fn((folder: string) => Promise.resolve(makeScan(folder, ['001'])))
+    })
+    const store = useProjectWorkspace()
+    await store.saveChild({ parentTitle: '漫画', chapterNumber: '', projectTitle: '', folderPath: '/library/漫画' })
+    expect(store.parents[0].duties).toEqual(['translated','proofread'])
+    const chapters = Object.fromEntries(store.parents[0].children.map(child => [child.folderPath.split('/').pop(), child.chapterNumber]))
+    expect(chapters).toEqual({ '第二话xxxx': '2', '第十二话 完': '12', '2025-10-02 第三话 完': '3', '姊烦10.1 0101~0110': '10.1' })
+  })
   it('batch-imports direct child folders when the selected root has no project files', async () => {
     const rootEntries: DirEntry[] = [
       { name: '第1話 开端', isDirectory: true, absPath: '/library/龙珠/第1話 开端' },
@@ -266,21 +285,26 @@ describe('useProjectWorkspace — import and parent management', () => {
       const stem = folder.endsWith('002_继续') ? '002' : '001'
       return Promise.resolve(makeScan(folder, [stem]))
     })
-    const projectSaveTree = vi.fn().mockResolvedValue(undefined)
+    const projectSaveChanges = vi.fn(async (_before, after) => structuredClone(after))
     mockComicType({
       scanChildProject,
       listDir: vi.fn().mockResolvedValue(rootEntries),
       projectGetTree: vi.fn().mockResolvedValue([]),
-      projectSaveTree
+      projectSaveChanges
     })
 
     const store = useProjectWorkspace()
+    const onProgress = vi.fn()
     await store.saveChild({
       parentTitle: '手填标题',
       chapterNumber: '',
       projectTitle: '',
       folderPath: '/library/龙珠'
-    })
+    }, undefined, onProgress)
+    const messages = onProgress.mock.calls.map(([message]) => message)
+    expect(messages.some(message => message.includes('1/2'))).toBe(true)
+    expect(messages.some(message => message.includes('2/2'))).toBe(true)
+    expect(messages.at(-1)).toContain('更新统计')
 
     expect(scanChildProject).toHaveBeenCalledWith('/library/龙珠/第1話 开端')
     expect(scanChildProject).toHaveBeenCalledWith('/library/龙珠/002_继续')
@@ -289,7 +313,11 @@ describe('useProjectWorkspace — import and parent management', () => {
     expect(store.parents[0].children).toHaveLength(2)
     expect(store.parents[0].children.map((child) => child.chapterNumber)).toEqual(['2', '1'])
     expect(store.parents[0].children.every((child) => child.parentTitle === '手填标题')).toBe(true)
-    expect(projectSaveTree).toHaveBeenCalledWith(store.parents)
+    // 并发保存：主进程收到"改前 / 改后"两份树，而不是整树覆盖
+    expect(projectSaveChanges).toHaveBeenCalledTimes(1)
+    const [before, after] = projectSaveChanges.mock.calls[0] as [ParentProject[], ParentProject[]]
+    expect(before).toEqual([])
+    expect(after[0].children).toHaveLength(2)
   })
 
   it('incrementally imports only new folders and preserves edited chapter metadata', async () => {
@@ -312,12 +340,12 @@ describe('useProjectWorkspace — import and parent management', () => {
       { name: '002_继续', isDirectory: true, absPath: '/library/龙珠/002_继续' }
     ]
     const scanChildProject = vi.fn().mockResolvedValue(makeScan('/library/龙珠/002_继续', ['002']))
-    const projectSaveTree = vi.fn().mockResolvedValue(undefined)
+    const projectSaveChanges = vi.fn(async (_before, after) => structuredClone(after))
     mockComicType({
       scanChildProject,
       listDir: vi.fn().mockResolvedValue(rootEntries),
       projectGetTree: vi.fn().mockResolvedValue([existingParent]),
-      projectSaveTree
+      projectSaveChanges
     })
 
     const store = useProjectWorkspace()
@@ -342,7 +370,7 @@ describe('useProjectWorkspace — import and parent management', () => {
       parentTitle: '我修改过的漫画名',
       chapterNumber: '2'
     })
-    expect(projectSaveTree).toHaveBeenCalledTimes(1)
+    expect(projectSaveChanges).toHaveBeenCalledTimes(1)
   })
 
   it('skips an already imported single folder without rescanning it', async () => {
@@ -359,12 +387,12 @@ describe('useProjectWorkspace — import and parent management', () => {
       children: [existing]
     }
     const scanChildProject = vi.fn()
-    const projectSaveTree = vi.fn().mockResolvedValue(undefined)
+    const projectSaveChanges = vi.fn().mockResolvedValue(undefined)
     mockComicType({
       scanChildProject,
       listDir: vi.fn().mockResolvedValue([]),
       projectGetTree: vi.fn().mockResolvedValue([parent]),
-      projectSaveTree
+      projectSaveChanges
     })
 
     const store = useProjectWorkspace()
@@ -377,7 +405,7 @@ describe('useProjectWorkspace — import and parent management', () => {
 
     expect(result).toEqual({ added: 0, skipped: 1, updated: 0 })
     expect(scanChildProject).not.toHaveBeenCalled()
-    expect(projectSaveTree).not.toHaveBeenCalled()
+    expect(projectSaveChanges).not.toHaveBeenCalled()
     expect(store.parents[0].children[0]).toMatchObject({
       chapterNumber: '自定义集数',
       projectTitle: '自定义标题'
@@ -600,4 +628,22 @@ describe('useProjectWorkspace — batch project status', () => {
     expect(updates[0].status).toBe('done')
     expect((updates[0].modes as Record<string, boolean>).typeset).toBe(true)
   })
+})
+
+it('keeps legacy image proofread completion through a PSD rescan, but honors explicit PSD unmarks', async () => {
+  const child = makeChild()
+  const scan = makeScan(child.folderPath, ['001'])
+  const imagePath = scan.jpgPairs[0].jpgPath!
+  const psdPath = scan.jpgPairs[0].psd.absPath
+  const modes = { typeset: false, translated: false, proofread: true, supervised: false }
+  const files: Record<string, any> = { [imagePath]: { path: imagePath, status:'pending', modes, modeTimestamps:{}, mtimeMs:2000, updatedAt:1 } }
+  mockComicType({scanChildProject:vi.fn().mockResolvedValue(scan),memoryGetProject:vi.fn(async()=>({childId:child.id,folderPath:child.folderPath,files}))})
+  const store = useProjectWorkspace()
+  store.parents = [{id:'parent',title:'parent',lastMtimeMs:0,children:[child]}]
+  const first = await store.scanChild(child)
+  expect(first[0].psd.modes?.proofread).toBe(true)
+  expect(store.findChild(child.id)?.psdModeStats?.proofread).toHaveLength(1)
+  files[psdPath] = {...files[imagePath],path:psdPath,modes:{...modes,proofread:false},updatedAt:2}
+  const second = await store.scanChild(child)
+  expect(second[0].psd.modes?.proofread).toBe(false)
 })

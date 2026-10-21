@@ -254,3 +254,41 @@ describe('目录不在：安静状态条，不弹红字', () => {
     expect(scan.chapterMissing.value).toBe(false)
   })
 })
+
+/**
+ * 工作台可见时的轻轮询（2026-10-05，配合主进程热缓存）。
+ * 主进程侧目录监听负责"文件一变就刷新缓存"，这里负责"到点去取"——
+ * 合起来：PS 存盘后界面最多 intervalMs 自己更新，不用切窗口等焦点。
+ */
+describe('工作台轻轮询', () => {
+  it('可见时到点自己扫；隐藏时不扫；stop 之后不再扫', async () => {
+    vi.useFakeTimers()
+    try {
+      const { workspace, scan } = mountScan('c2')
+      workspace.parents = [
+        { id: 'p1', title: '父级', lastMtimeMs: 0, children: [child('c2', FOLDER_B, '第2集')] }
+      ]
+      workspace.setActiveChild(workspace.findChild('c2')!, [])
+
+      scan.startAutoRefresh(1000)
+
+      vi.advanceTimersByTime(1000)
+      expect(window.comicType.scanChildProject).toHaveBeenCalledTimes(1)
+      // 结束这次飞行，别留悬挂
+      scanDeferred?.resolve({ jpgPairs: [], txtFiles: [], errors: [] })
+      await vi.advanceTimersByTimeAsync(0)
+
+      // 页面藏起来：到点不许再扫
+      Object.defineProperty(document, 'visibilityState', { value: 'hidden', configurable: true })
+      vi.advanceTimersByTime(5000)
+      expect(window.comicType.scanChildProject).toHaveBeenCalledTimes(1)
+      Object.defineProperty(document, 'visibilityState', { value: 'visible', configurable: true })
+
+      scan.stopAutoRefresh()
+      vi.advanceTimersByTime(5000)
+      expect(window.comicType.scanChildProject).toHaveBeenCalledTimes(1)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+})

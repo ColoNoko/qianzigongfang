@@ -6,6 +6,7 @@ productName: 汉化工坊
 electronDownload:
   mirror: https://npmmirror.com/mirrors/electron/
 directories:
+  output: release/latest
   buildResources: build
 # 只随包分发这两种语言的 Electron 资源（`locales/*.pak`）。
 #
@@ -19,6 +20,8 @@ electronLanguages:
   - zh-CN
   - en-US
 files:
+  - '!*.zip'                    # 根目录的修复包和工具压缩包不进入程序
+  - '!.local-backups{,/**}'
   - '!**/.vscode/*'
   - '!src/*'
   - '!release/*'
@@ -82,17 +85,18 @@ files:
 asarUnpack:
   - resources/**
 win:
+  artifactName: ${productName}-latest-绿色版.${ext}
   executableName: 汉化工坊
   icon: build/icon.ico
 nsis:
-  artifactName: ${productName}-${version}-setup.${ext}
+  artifactName: ${productName}-latest-setup.${ext}
   shortcutName: ${productName}
   uninstallDisplayName: ${productName}
   createDesktopShortcut: always
 portable:
   # 单文件版（自解压、双击即用）。与「文件夹版」（7z，解压后一堆文件）**名字要分得开** ——
   # 以前两个都叫 `-portable`，光看名字看不出哪个是哪种形态（用户 2026-10-04 反馈）。
-  artifactName: ${productName}-${version}-单文件版.${ext}
+  artifactName: ${productName}-latest-单文件版.${ext}
 mac:
   icon: build/icon.icns
   entitlementsInherit: build/entitlements.mac.plist

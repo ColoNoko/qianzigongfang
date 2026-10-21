@@ -1,46 +1,18 @@
 <script setup lang="ts">
-// Global notification renderer. Auto-dismiss is owned by the toast store;
-// TransitionGroup keeps removed notices mounted briefly for the fade-out.
-import { storeToRefs } from 'pinia'
+import { onBeforeUnmount, watch } from 'vue'
+import { toast } from 'vue-sonner'
+import { Toaster } from './ui/sonner'
 import { useToastStore } from '@renderer/stores/toast'
-
+import 'vue-sonner/style.css'
 const store = useToastStore()
-const { toasts } = storeToRefs(store)
+const shown = new Map<string, string>()
+watch(() => store.toasts.slice(), items => {
+  for (const item of items) if (shown.get(item.id) !== `${item.type}:${item.message}`) {
+    shown.set(item.id, `${item.type}:${item.message}`)
+    toast[item.type](item.message, { id: item.id, duration: Infinity, onDismiss: () => store.removeToast(item.id), class: 'font-bold', action: { label: '关闭', onClick: () => store.removeToast(item.id) } })
+  }
+  for (const id of shown.keys()) if (!items.some(item => item.id === id)) { toast.dismiss(id); shown.delete(id) }
+}, { immediate: true })
+onBeforeUnmount(() => { for (const id of shown.keys()) toast.dismiss(id) })
 </script>
-
-<template>
-  <TransitionGroup
-    name="global-notification"
-    tag="div"
-    class="pointer-events-none fixed left-1/2 top-4 z-[100] flex -translate-x-1/2 flex-col items-center gap-2"
-    data-testid="error-toast-container"
-  >
-    <button
-      v-for="toast in toasts"
-      :key="toast.id"
-      type="button"
-      class="pointer-events-auto min-w-64 max-w-[min(560px,calc(100vw-32px))] cursor-pointer rounded-lg px-5 py-3 text-center text-sm font-bold shadow-[var(--shadow-2)]"
-      :class="
-        toast.type === 'success' ? 'bg-accent text-text-on-accent' : 'bg-danger text-danger-fg'
-      "
-      @click="store.removeToast(toast.id)"
-    >
-      {{ toast.message }}
-    </button>
-  </TransitionGroup>
-</template>
-
-<style scoped>
-.global-notification-enter-active,
-.global-notification-leave-active {
-  transition:
-    opacity 300ms ease,
-    transform 300ms ease;
-}
-
-.global-notification-enter-from,
-.global-notification-leave-to {
-  opacity: 0;
-  transform: translateY(-10px);
-}
-</style>
+<template><Toaster position="top-center" rich-colors :expand="false" /></template>

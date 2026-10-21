@@ -108,3 +108,9 @@ describe('inferParentDuties：没声明过职责时，按已有标记猜一个�
     ])
   })
 })
+
+it('selects slower or faster duties without changing stable tie order', () => {
+  const progress = {typeset:{done:8,total:10},proofread:{done:2,total:10}}
+  expect(pickDutyMode(['typeset','proofread'],progress,'slower')).toBe('proofread')
+  expect(pickDutyMode(['typeset','proofread'],progress,'faster')).toBe('typeset')
+})

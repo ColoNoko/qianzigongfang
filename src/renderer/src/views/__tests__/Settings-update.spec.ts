@@ -71,7 +71,7 @@ describe('设置页「检查更新」', () => {
   it('初始状态：有「检查更新」按钮，还不显示任何结论', async () => {
     const { wrapper } = await mountSettings({ status: 'up-to-date', currentVersion: '0.0.0' })
     expect(wrapper.find('[data-testid="update-check"]').exists()).toBe(true)
-    expect(wrapper.find('[data-testid="update-status"]').text()).toBe('')
+    expect(wrapper.find('[data-testid="update-status"]').exists()).toBe(false)
   })
 
   it('已是最新 → 说清楚，且**没有**「去下载」按钮', async () => {

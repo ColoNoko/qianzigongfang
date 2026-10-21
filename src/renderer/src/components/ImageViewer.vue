@@ -8,6 +8,7 @@
 //   TransformationAnchor.AnchorUnderMouse → zoom-around-mouse formula (see onWheel)
 //   fitInView(sceneRect, KeepAspectRatio)  → fitScale = min(cw/iw, ch/ih)
 //   wheelEvent Ctrl+wheel → scale(1.1|1/1.1) → onWheel factor = 1.1 | 1/1.1
+// 普通滚轮交给宿主翻页；Ctrl+滚轮缩放。
 //   resizeEvent → fitInView                → ResizeObserver → fitToContainer
 //
 // Shared with CompareViewer (task 5.3) for the jpg side and standalone inspection.
@@ -17,13 +18,20 @@
 //   · 不给 `zoomRatio` → **自管**（老行为一字不改）：滚轮/双击都在组件内部改倍数。
 //   · 给了 `zoomRatio` → **受控**：倍数由父组件持有，这里只负责算像素，
 //     滚轮算出新倍数后通过 `update:zoomRatio` 报上去 —— 于是按钮和滚轮转的是**同一个旋钮**。
-// 平移（offset）**始终在组件内部**：对照状态两栏可以各自拖到不同位置，这是有意的。
+// 可选 pan 使用图像宽高归一化偏移，让不同大小的对照栏同步查看同一位置。
+import { isDragGesture } from '@renderer/features/translation/anchor-geometry'
+import { useSettingsStore } from '@renderer/stores/settings'
 import { ref, computed, watch, onMounted, onBeforeUnmount } from 'vue'
-import { MIN_ZOOM_RATIO, MAX_ZOOM_RATIO, clampZoomRatio } from '@renderer/features/project/viewer-zoom'
+import {
+  MIN_ZOOM_RATIO,
+  MAX_ZOOM_RATIO,
+  clampZoomRatio
+} from '@renderer/features/project/viewer-zoom'
 
-const props = defineProps<{ src: string; zoomRatio?: number }>()
+const settings = useSettingsStore()
+const props = withDefaults(defineProps<{ src: string; zoomRatio?: number; panEnabled?: boolean; drawMode?: boolean; pan?: { x: number; y: number } }>(), { panEnabled: true })
 
-const emit = defineEmits<{ (e: 'update:zoomRatio', ratio: number): void }>()
+const emit = defineEmits<{ (e: 'update:zoomRatio', ratio: number): void; (e: 'panStart'): void; (e: 'update:pan', pan: { x: number; y: number }): void; (e: 'pageWheel', delta: number): void }>()
 
 const containerRef = ref<HTMLDivElement | null>(null)
 const imgRef = ref<HTMLImageElement | null>(null)
@@ -58,6 +66,7 @@ const dragging = ref(false)
 
 // Drag tracking (non-reactive — only needed during active drag).
 let dragStartX = 0
+let dragMoved = false
 let dragStartY = 0
 let startOffsetX = 0
 let startOffsetY = 0
@@ -80,6 +89,7 @@ const isZoomed = computed(() => activeRatio.value > 1 + 0.001)
 
 const containerCursor = computed(() => {
   if (dragging.value) return 'grabbing'
+  if (props.drawMode) return 'crosshair'
   if (isZoomed.value) return 'grab'
   return 'default'
 })
@@ -105,13 +115,13 @@ function computeFitScale(): number {
   return Math.min(cw / naturalWidth.value, ch / naturalHeight.value)
 }
 
-function clampOffsets(): void {
+function clampOffsets(nextRatio = activeRatio.value): void {
   const container = containerRef.value
   if (!container || !naturalWidth.value || !naturalHeight.value) return
   const cw = container.clientWidth
   const ch = container.clientHeight
-  const displayedW = naturalWidth.value * scale.value
-  const displayedH = naturalHeight.value * scale.value
+  const displayedW = naturalWidth.value * fitScale.value * nextRatio
+  const displayedH = naturalHeight.value * fitScale.value * nextRatio
   // Allow panning only within the overflow margin; if image is smaller than
   // container in a dimension, offset is clamped to 0.
   const maxX = Math.max(0, (displayedW - cw) / 2)
@@ -120,11 +130,25 @@ function clampOffsets(): void {
   offsetY.value = Math.max(-maxY, Math.min(maxY, offsetY.value))
 }
 
+function publishPan(nextRatio = activeRatio.value): void {
+  const scale = fitScale.value * nextRatio
+  if (!naturalWidth.value || !naturalHeight.value) return
+  emit('update:pan', { x: offsetX.value / (naturalWidth.value * scale), y: offsetY.value / (naturalHeight.value * scale) })
+}
+function applyPan(): void {
+  if (!props.pan) return
+  offsetX.value = props.pan.x * naturalWidth.value * scale.value
+  offsetY.value = props.pan.y * naturalHeight.value * scale.value
+  clampOffsets()
+}
+watch([() => props.pan, scale, naturalWidth, naturalHeight], applyPan)
+
 function fitToContainer(): void {
   fitScale.value = computeFitScale()
   setRatio(MIN_ZOOM_RATIO)
   offsetX.value = 0
   offsetY.value = 0
+  publishPan(1)
 }
 
 /**
@@ -146,8 +170,9 @@ function syncFitScale(): void {
 }
 
 function onWheel(e: WheelEvent): void {
-  if (!e.ctrlKey) return
   e.preventDefault()
+  if (!e.deltaY) return
+  if (e.ctrlKey === settings.invertWheel) { emit('pageWheel', e.deltaY); return }
   // deltaY < 0 = scroll up = zoom in (matches angleDelta().y() > 0 in oldcode).
   const factor = e.deltaY < 0 ? 1.1 : 1 / 1.1
   const newRatio = activeRatio.value * factor
@@ -169,12 +194,14 @@ function onWheel(e: WheelEvent): void {
   offsetX.value = mx * (1 - actualFactor) + offsetX.value * actualFactor
   offsetY.value = my * (1 - actualFactor) + offsetY.value * actualFactor
   setRatio(newRatio)
-  clampOffsets()
+  clampOffsets(newRatio)
+  publishPan(newRatio)
 }
 
 function onMouseDown(e: MouseEvent): void {
-  if (!isZoomed.value) return
+  if (!props.panEnabled || e.button !== 0 || e.defaultPrevented || !isZoomed.value) return
   dragging.value = true
+  dragMoved = false
   dragStartX = e.clientX
   dragStartY = e.clientY
   startOffsetX = offsetX.value
@@ -182,11 +209,19 @@ function onMouseDown(e: MouseEvent): void {
   e.preventDefault()
 }
 
+watch(() => props.panEnabled, () => { dragging.value = false })
+
 function onMouseMove(e: MouseEvent): void {
   if (!dragging.value) return
+  if (!dragMoved) {
+    if (!isDragGesture(e.clientX - dragStartX, e.clientY - dragStartY)) return
+    dragMoved = true
+    emit('panStart')
+  }
   offsetX.value = startOffsetX + (e.clientX - dragStartX)
   offsetY.value = startOffsetY + (e.clientY - dragStartY)
   clampOffsets()
+  publishPan()
 }
 
 function onMouseUp(): void {
@@ -237,6 +272,7 @@ watch(
 watch(
   () => props.zoomRatio,
   (next, previous) => {
+    if (props.pan) { applyPan(); return }
     if (next === undefined || previous === undefined) return
     if (lastEmittedRatio !== null && Math.abs(next - lastEmittedRatio) < 1e-9) {
       lastEmittedRatio = null
@@ -268,19 +304,21 @@ onMounted(() => {
   // Listen on window so drag continues even if cursor leaves the container.
   window.addEventListener('mousemove', onMouseMove)
   window.addEventListener('mouseup', onMouseUp)
+  window.addEventListener('blur', onMouseUp)
 })
 
 onBeforeUnmount(() => {
   resizeObserver?.disconnect()
   window.removeEventListener('mousemove', onMouseMove)
   window.removeEventListener('mouseup', onMouseUp)
+  window.removeEventListener('blur', onMouseUp)
 })
 </script>
 
 <template>
   <div
     ref="containerRef"
-    class="relative h-full w-full overflow-hidden bg-app-bg select-none"
+    class="relative h-full w-full overflow-hidden bg-media-bg select-none"
     :style="{ cursor: containerCursor }"
     @wheel="onWheel"
     @mousedown="onMouseDown"
@@ -296,6 +334,26 @@ onBeforeUnmount(() => {
       @load="onImgLoad"
       @error="onImgError"
     />
+    <!--
+      锚点图层（P1 译文对照，2026-10-06）：**可选**插槽，不传时这里一个节点都不渲染，
+      既有用法（对照视图的左右两栏 / 单图查看）行为一字不改。
+
+      · 图层本身 `pointer-events:none` —— 鼠标事件照常落到容器上，**拖拽平移不受影响**；
+        里面的徽章自己开 `pointer-events:auto`，只在徽章那几十个像素上拦截。
+      · 插槽把"图片此刻摆在哪"报出去（原始尺寸 / 绝对缩放 / 平移量），
+        调用方用 `anchorOffsetFromCenter()` 自己换算归一化坐标 ——
+        这样**不必把 offset 变成受控 prop**（那条"平移始终在组件内部"的刻意设计保持不动）。
+    -->
+    <div v-if="$slots.overlay" class="pointer-events-none absolute inset-0">
+      <slot
+        name="overlay"
+        :natural-width="naturalWidth"
+        :natural-height="naturalHeight"
+        :scale="scale"
+        :offset-x="offsetX"
+        :offset-y="offsetY"
+      />
+    </div>
     <!-- Loading placeholder -->
     <div
       v-if="loading && !error"

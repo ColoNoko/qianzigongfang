@@ -3,11 +3,15 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
 import {
   DEFAULT_PROJECT_LIST_WIDTH,
+  DEFAULT_VIEWER_SPLIT_WIDTH,
   MAX_PROJECT_LIST_WIDTH,
+  MAX_VIEWER_SPLIT_WIDTH,
   MIN_PROJECT_LIST_WIDTH,
+  MIN_VIEWER_SPLIT_WIDTH,
   normalizeGuideSeenVersion,
   normalizePlayIntervalMs,
   normalizeProjectListWidth,
+  normalizeViewerSplitWidth,
   useSettingsStore
 } from '../settings'
 import type { ThumbSize } from '@renderer/components/ThumbGrid.vue'
@@ -425,5 +429,136 @@ describe('进度页排序偏好', () => {
     store.setProgressSort('nonsense')
     expect(store.progressSort).toBe('default:desc')
     expect(storeSet).not.toHaveBeenCalled()
+  })
+})
+
+/**
+ * 对照视图「译文态」的分栏宽度（2026-10-06）。
+ *
+ * 与项目列表宽度同一条路：**默认 66/34**（译文栏用不到一半宽）、拖完落库、
+ * 读回时校验、越界夹取、垃圾值回默认。PSD 对照态**不用这一份**（那边写死 50/50）。
+ */
+describe('settings · 对照视图译文态分栏宽度', () => {
+  const VIEWER_WIDTH_STORAGE_KEY = 'ui.viewerSplitWidth'
+
+  it('默认 66（译文栏 34%）；落库值读回来就用它', async () => {
+    const storeGet = vi.fn((key: string) =>
+      Promise.resolve(key === VIEWER_WIDTH_STORAGE_KEY ? 58 : undefined)
+    )
+    window.comicType = { storeGet, storeSet: vi.fn() } as unknown as typeof window.comicType
+
+    const store = useSettingsStore()
+    expect(store.viewerSplitWidth).toBe(DEFAULT_VIEWER_SPLIT_WIDTH)
+    expect(DEFAULT_VIEWER_SPLIT_WIDTH).toBe(66)
+
+    await store.loadSettings()
+    expect(store.viewerSplitWidth).toBe(58)
+  })
+
+  it('拖完写库；报回同一个值不重复写（分隔条松手就调一次）', () => {
+    const storeSet = vi.fn().mockResolvedValue(undefined)
+    window.comicType = { storeGet: vi.fn(), storeSet } as unknown as typeof window.comicType
+
+    const store = useSettingsStore()
+    store.setViewerSplitWidth(58)
+    expect(store.viewerSplitWidth).toBe(58)
+    expect(storeSet).toHaveBeenCalledWith(VIEWER_WIDTH_STORAGE_KEY, 58)
+
+    storeSet.mockClear()
+    store.setViewerSplitWidth(58)
+    expect(storeSet).not.toHaveBeenCalled()
+  })
+
+  it('越界夹进合法带，垃圾值回默认（库里被手改过也不会用坏分栏）', () => {
+    expect(normalizeViewerSplitWidth(200)).toBe(MAX_VIEWER_SPLIT_WIDTH)
+    expect(normalizeViewerSplitWidth(1)).toBe(MIN_VIEWER_SPLIT_WIDTH)
+    expect(normalizeViewerSplitWidth('abc')).toBe(DEFAULT_VIEWER_SPLIT_WIDTH)
+    expect(normalizeViewerSplitWidth(null)).toBe(DEFAULT_VIEWER_SPLIT_WIDTH)
+    expect(normalizeViewerSplitWidth(undefined)).toBe(DEFAULT_VIEWER_SPLIT_WIDTH)
+    expect(normalizeViewerSplitWidth('')).toBe(DEFAULT_VIEWER_SPLIT_WIDTH)
+    expect(normalizeViewerSplitWidth(Number.NaN)).toBe(DEFAULT_VIEWER_SPLIT_WIDTH)
+    // 数值字符串也认（库里历史上存过 JSON 字符串）
+    expect(normalizeViewerSplitWidth('58.5')).toBe(58.5)
+  })
+
+  it('读库整个失败 ⇒ 回默认，不抛', async () => {
+    window.comicType = {
+      storeGet: vi.fn().mockRejectedValue(new Error('库炸了')),
+      storeSet: vi.fn()
+    } as unknown as typeof window.comicType
+
+    const store = useSettingsStore()
+    await store.loadSettings()
+    expect(store.viewerSplitWidth).toBe(DEFAULT_VIEWER_SPLIT_WIDTH)
+  })
+})
+
+it('migrates enabled modes to import duties while keeping every work mode available', async () => {
+  setActivePinia(createPinia())
+  mockComicType(vi.fn(async key => key === 'ui.workModes' ? {enabled:['proofread'],active:'proofread'} : undefined))
+  const store = useSettingsStore()
+  await store.loadSettings()
+  expect(store.defaultImportDuties).toEqual(['proofread'])
+  expect(store.enabledWorkModes).toHaveLength(4)
+  await store.saveImportDuties(['translated','supervised'],'faster')
+  expect(store.activeWorkMode).toBe('proofread')
+  expect(window.comicType.storeSet).toHaveBeenCalledWith('ui.importDuties',{duties:['translated','supervised'],priority:'faster'})
+})
+
+
+describe('homepage preference', () => {
+  it('persists modern and restores it on the next load, keeping unknown values on default', async () => {
+    const data = new Map<string, unknown>()
+    mockComicType(vi.fn(async key => data.get(key)))
+    window.comicType.storeSet = vi.fn(async (key, value) => { data.set(key, value) })
+    const store = useSettingsStore()
+    await store.setHomeStyle('modern')
+    store.homeStyle = 'default'
+    await store.loadSettings()
+    expect(store.homeStyle).toBe('modern')
+    data.set('ui.homeStyle', 'unsupported')
+    await store.loadSettings()
+    expect(store.homeStyle).toBe('default')
+  })
+  it('keeps the existing homepage when saving fails', async () => {
+    mockComicType(vi.fn())
+    window.comicType.storeSet = vi.fn().mockRejectedValue(new Error('disk full'))
+    const store = useSettingsStore()
+    await store.setHomeStyle('modern')
+    expect(store.homeStyle).toBe('default')
+  })
+})
+
+
+describe('per-comic work mode', () => {
+  it('uses global mode first, keeps temporary comic overrides isolated, and resets them on global choice or reload', async () => {
+    const values = new Map<string, unknown>()
+    mockComicType(vi.fn(async (key: string) => values.get(key)))
+    vi.mocked(window.comicType.storeSet).mockImplementation(async (key, value) => { values.set(key, structuredClone(value)) })
+    const store = useSettingsStore()
+    await store.loadSettings()
+    const a = { id: 'a', duties: ['translated', 'proofread'], children: [] } as unknown as import('@shared/types').ParentProject
+    const b = { id: 'b', duties: ['typeset'], children: [] } as unknown as import('@shared/types').ParentProject
+    await store.setProjectWorkMode(a.id, 'proofread')
+    await store.setProjectWorkMode(b.id, 'typeset')
+    expect(store.modeForProject(a)).toBe('proofread')
+    expect(store.modeForProject(b)).toBe('typeset')
+    expect(store.activeWorkMode).toBe('typeset')
+    await store.setActiveWorkMode('translated')
+    expect(store.modeForProject(a)).toBe('translated')
+    expect(store.modeForProject(b)).toBe('translated')
+    await store.setProjectWorkMode(a.id, 'proofread')
+    await store.setActiveWorkMode('translated')
+    expect(store.modeForProject(a)).toBe('translated')
+    await store.setActiveWorkMode('typeset')
+    expect(values.has('ui.projectWorkModes')).toBe(false)
+    values.set('ui.projectWorkModes', {a:'proofread'})
+    setActivePinia(createPinia())
+    const restored = useSettingsStore()
+    await restored.loadSettings()
+    expect(restored.modeForProject(a)).toBe('typeset')
+    expect(restored.modeForProject(b)).toBe('typeset')
+    await restored.setProjectWorkMode(a.id, 'translated')
+    expect(restored.modeForProject(b)).toBe('typeset')
   })
 })

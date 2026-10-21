@@ -1,30 +1,20 @@
 // @vitest-environment jsdom
-import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
+import { enableAutoUnmount, config } from '@vue/test-utils'
+config.global.stubs.teleport = true
+config.global.renderStubDefaultSlot = true
+enableAutoUnmount(afterEach)
+
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { flushPromises, mount } from '@vue/test-utils'
 import { createPinia } from 'pinia'
 import Import from '../Import.vue'
-import AppSelect from '@renderer/components/AppSelect.vue'
 import { LABELPLUS_IMPORT_SETTINGS_KEY } from '@shared/labelplus-import'
-import { useSettingsStore } from '@renderer/stores/settings'
 import { useToastStore } from '@renderer/stores/toast'
 
 /**
  * AppSelect 是自定义下拉，驱动它要点开菜单再点选项 —— 那是在测它的内部 DOM。
  * 直接触发 `update:modelValue` 是它的**公开契约**，改版也不会碎。
  */
-async function setGroupDirectionChoice(
-  wrapper: VueWrapper,
-  group: string,
-  value: string
-): Promise<void> {
-  const select = wrapper
-    .findAllComponents(AppSelect)
-    .find((component) => component.props('testId') === `import-group-direction-${group}`)
-  if (!select) throw new Error(`找不到「${group}」的方向下拉`)
-  select.vm.$emit('update:modelValue', value)
-  await flushPromises()
-}
-
 function makeSelection() {
   return {
     apiVersion: 1,
@@ -207,13 +197,17 @@ describe('Import view', () => {
 
   it('sends standardized font, direction, position and group settings to the generator', async () => {
     const api = setupApi()
+    api.storeGet.mockImplementation(async (key: string) => key === LABELPLUS_IMPORT_SETTINGS_KEY ? {
+      options: { positionOffset: { x: 12, y: 9 }, labelIndexOffset: { x: 7, y: 8 },
+        textReplacementExpression: 'a->b', dialogOverlay: { enabled: true } }
+    } : undefined)
     const wrapper = mount(Import, { global: { plugins: [createPinia()] } })
     await wrapper.get('[data-testid="import-file-button"]').trigger('click')
     await flushPromises()
 
     await wrapper.get('[data-testid="import-font-size"]').setValue('31')
-    await wrapper.get('[data-testid="import-bold"]').setValue(true)
-    await wrapper.get('[data-testid="import-offset-x"]').setValue('12')
+    await wrapper.get('[data-testid="import-bold"]').trigger('click')
+    await wrapper.get('[data-testid="import-resolution"]').setValue('144')
     await wrapper.get('[data-testid="import-groups-outside"]').trigger('click')
     await wrapper.get('[data-testid="import-generate-button"]').trigger('click')
     await flushPromises()
@@ -228,7 +222,11 @@ describe('Import view', () => {
       fauxBold: true,
       font: { postScriptName: expect.any(String) }
     })
-    expect(request.options.positionOffset).toEqual({ unit: 'px', x: 12, y: 0 })
+    expect(request.options.positionOffset).toEqual({ unit: 'px', x: 0, y: 0 })
+    expect(request.options.resolutionPpi).toBe(144)
+    expect(request.options.labelIndexOffset).toEqual({ unit: 'px', x: 0, y: 0 })
+    expect(request.options.textReplacementExpression).toBe('')
+    expect(request.options.dialogOverlay.enabled).toBe(false)
   })
 
   it('persists import preferences under the versioned settings key', async () => {
@@ -236,8 +234,10 @@ describe('Import view', () => {
     const wrapper = mount(Import, { global: { plugins: [createPinia()] } })
     await wrapper.get('[data-testid="import-file-button"]').trigger('click')
     await flushPromises()
+    expect((wrapper.get('[data-testid="import-leading"]').element as HTMLInputElement).value).toBe('120')
     await wrapper.get('[data-testid="import-font-size"]').setValue('28')
-    await wrapper.get('[data-testid="import-auto-project"]').setValue(false)
+    await wrapper.get('[data-testid="import-leading"]').setValue('135')
+    await wrapper.get('[data-testid="import-auto-project"]').trigger('click')
     await flushPromises()
 
     expect(api.storeSet).toHaveBeenCalledWith(
@@ -245,11 +245,20 @@ describe('Import view', () => {
       expect.objectContaining({
         matchMode: 'file-name',
         options: expect.objectContaining({
-          textStyle: expect.objectContaining({ fontSizePx: 28 })
+          textStyle: expect.objectContaining({ fontSizePx: 28, leadingPercent: 135 })
         }),
         autoImportProject: false
       })
     )
+    const saved = api.storeSet.mock.calls.filter(([key]) => key === LABELPLUS_IMPORT_SETTINGS_KEY).at(-1)![1]
+    wrapper.unmount()
+    api.storeGet.mockImplementation(async key => key === LABELPLUS_IMPORT_SETTINGS_KEY ? saved : undefined)
+    const reopened = mount(Import, { global: { plugins: [createPinia()] } })
+    await flushPromises()
+    await reopened.get('[data-testid="import-file-button"]').trigger('click')
+    await flushPromises()
+    expect((reopened.get('[data-testid="import-font-size"]').element as HTMLInputElement).value).toBe('28')
+    expect((reopened.get('[data-testid="import-leading"]').element as HTMLInputElement).value).toBe('135')
   })
 
   it('标准垂直罗马对齐默认是开的，关掉后原样发出去', async () => {
@@ -259,9 +268,9 @@ describe('Import view', () => {
     await flushPromises()
 
     const box = wrapper.get('[data-testid="import-vertical-roman"]')
-    expect((box.element as HTMLInputElement).checked).toBe(true)
+    expect(box.attributes('aria-checked')).toBe('true')
 
-    await box.setValue(false)
+    await box.trigger('click')
     await wrapper.get('[data-testid="import-generate-button"]').trigger('click')
     await flushPromises()
 
@@ -277,9 +286,9 @@ describe('Import view', () => {
     await flushPromises()
 
     const box = wrapper.get('[data-testid="import-ligatures"]')
-    expect((box.element as HTMLInputElement).checked).toBe(true)
+    expect(box.attributes('aria-checked')).toBe('true')
 
-    await box.setValue(false)
+    await box.trigger('click')
     await wrapper.get('[data-testid="import-generate-button"]').trigger('click')
     await flushPromises()
 
@@ -295,6 +304,7 @@ describe('Import view', () => {
     expect(wrapper.find('[data-testid="import-font-family"]').exists()).toBe(false)
     expect(wrapper.find('[data-testid="import-font-postscript"]').exists()).toBe(false)
     await wrapper.get('[data-testid="import-font-trigger"]').trigger('click')
+    await flushPromises()
     await wrapper.get('[data-testid="import-font-search"]').setValue('Noto')
     expect(wrapper.find('[data-testid="import-font-option-font-1"]').exists()).toBe(true)
     expect(wrapper.get('[data-testid="import-fill-color"]').element).toHaveProperty('value', '#000000')
@@ -354,185 +364,6 @@ describe('Import view', () => {
    * 「交给 Photoshop」那条路是**新增**的一块，刻意不碰上面的本地出图 ——
    * 这几条锁的就是"它没有把既有流程带歪"。
    */
-  it('「交给 Photoshop」面板与两个按钮都在，且本地生成按钮照旧', async () => {
-    setupApi()
-    const wrapper = mount(Import, { global: { plugins: [createPinia()] } })
-    // 这块面板在"已选文件"之后才渲染（和其余面板一致），所以先选一个文件。
-    await wrapper.get('[data-testid="import-file-button"]').trigger('click')
-    await flushPromises()
-
-    expect(wrapper.find('[data-testid="import-photoshop-section"]').exists()).toBe(true)
-    expect(wrapper.find('[data-testid="import-export-manifest"]').exists()).toBe(true)
-    expect(wrapper.find('[data-testid="import-run-photoshop"]').exists()).toBe(true)
-    // 本地那条路一个按钮都没少。
-    expect(wrapper.find('[data-testid="import-generate-button"]').exists()).toBe(true)
-  })
-
-  it('没配 Photoshop 路径时只提示，绝不发请求', async () => {
-    setupApi()
-    const runLabelPlusInPhotoshop = vi.fn()
-    ;(window.comicType as unknown as Record<string, unknown>).runLabelPlusInPhotoshop =
-      runLabelPlusInPhotoshop
-
-    const pinia = createPinia()
-    const wrapper = mount(Import, { global: { plugins: [pinia] } })
-    // 单独挂载 Import 时，settings store 的 loadSettings 不会被跑到（那是 App 的活），
-    // 所以这里直接把状态摆成"没配 Photoshop"。
-    useSettingsStore(pinia).photoshopPath = ''
-
-    await wrapper.get('[data-testid="import-file-button"]').trigger('click')
-    await flushPromises()
-
-    await wrapper.get('[data-testid="import-run-photoshop"]').trigger('click')
-    await flushPromises()
-
-    expect(runLabelPlusInPhotoshop).not.toHaveBeenCalled()
-    wrapper.unmount()
-  })
-
-  it('配好 Photoshop 后，把请求原样发出去并开始轮询回执', async () => {
-    setupApi()
-    const runLabelPlusInPhotoshop = vi.fn().mockResolvedValue({
-      ok: true,
-      message: '指令清单已生成：2 张图 / 3 条文字；已在 Photoshop 里开始执行',
-      jobId: 'lp-1',
-      manifestPath: 'C:\\app\\temp\\labelplus-jobs\\lp-1\\manifest.json',
-      launcherPath: 'C:\\app\\temp\\labelplus-jobs\\lp-1\\run.jsx',
-      reportPath: 'C:\\app\\temp\\labelplus-jobs\\lp-1\\report.json',
-      runnerPath: 'C:\\app\\resources\\qianzi-runner.jsx',
-      imageCount: 2,
-      labelCount: 3,
-      skippedImages: [],
-      issues: [],
-      launched: true,
-      launchMessage: ''
-    })
-    const readLabelPlusJobReport = vi.fn().mockResolvedValue(null)
-    Object.assign(window.comicType as unknown as Record<string, unknown>, {
-      runLabelPlusInPhotoshop,
-      readLabelPlusJobReport
-    })
-
-    const pinia = createPinia()
-    const wrapper = mount(Import, { global: { plugins: [pinia] } })
-    useSettingsStore(pinia).photoshopPath = 'C:\\PS\\Photoshop.exe'
-
-    await wrapper.get('[data-testid="import-file-button"]').trigger('click')
-    await flushPromises()
-
-    await wrapper.get('[data-testid="import-run-photoshop"]').trigger('click')
-    await flushPromises()
-
-    expect(runLabelPlusInPhotoshop).toHaveBeenCalledTimes(1)
-    const [request, photoshopPath] = runLabelPlusInPhotoshop.mock.calls[0] as [
-      Record<string, unknown>,
-      string
-    ]
-    expect(photoshopPath).toBe('C:\\PS\\Photoshop.exe')
-    expect(request).toMatchObject({
-      apiVersion: 1,
-      labelFilePath: 'C:\\work\\labels.txt',
-      sourceDirectory: 'C:\\work',
-      outputDirectory: 'C:\\work\\output',
-      selectedImageNames: ['page-01.png', 'page-02.png'],
-      selectedGroups: ['框内', '框外'],
-      actionSetName: ''
-    })
-    expect(wrapper.text()).toContain('2 张图 / 3 条文字')
-
-    // 轮询：装配后立刻读一次回执（这样界面不会先空着等 1.2 秒）。
-    expect(readLabelPlusJobReport).toHaveBeenCalledWith(
-      'C:\\app\\temp\\labelplus-jobs\\lp-1\\report.json'
-    )
-
-    // 卸载必须把定时器清掉，否则测试进程会一直挂着一个 interval。
-    wrapper.unmount()
-  })
-
-  it('分组映射表：每个分组一行，动作名和方向都原样发出去', async () => {
-    setupApi()
-    const runLabelPlusInPhotoshop = vi.fn().mockResolvedValue({
-      ok: true,
-      message: 'ok',
-      jobId: 'lp-1',
-      manifestPath: 'C:\\app\\temp\\lp-1\\manifest.json',
-      launcherPath: 'C:\\app\\temp\\lp-1\\run.jsx',
-      reportPath: 'C:\\app\\temp\\lp-1\\report.json',
-      runnerPath: 'C:\\app\\resources\\qianzi-runner.jsx',
-      imageCount: 1,
-      labelCount: 2,
-      skippedImages: [],
-      issues: [],
-      launched: true,
-      launchMessage: ''
-    })
-    Object.assign(window.comicType as unknown as Record<string, unknown>, {
-      runLabelPlusInPhotoshop,
-      readLabelPlusJobReport: vi.fn().mockResolvedValue(null)
-    })
-
-    const pinia = createPinia()
-    const wrapper = mount(Import, { global: { plugins: [pinia] } })
-    useSettingsStore(pinia).photoshopPath = 'C:\\PS\\Photoshop.exe'
-    await wrapper.get('[data-testid="import-file-button"]').trigger('click')
-    await flushPromises()
-
-    // 文件里的两个分组各一行。
-    expect(wrapper.find('[data-testid="import-group-mapping"]').exists()).toBe(true)
-    expect(wrapper.find('[data-testid="import-group-action-框内"]').exists()).toBe(true)
-    expect(wrapper.find('[data-testid="import-group-action-框外"]').exists()).toBe(true)
-
-    // 动作名：显式填的走显式的，没填的留空（runner 会回落到分组名）。
-    await wrapper.get('[data-testid="import-group-action-框内"]').setValue('框内竖')
-
-    // 方向：AppSelect 是自定义下拉，直接驱动它的公开事件，不依赖内部 DOM 结构。
-    await setGroupDirectionChoice(wrapper, '框外', 'vertical')
-    await flushPromises()
-
-    await wrapper.get('[data-testid="import-run-photoshop"]').trigger('click')
-    await flushPromises()
-
-    const [request] = runLabelPlusInPhotoshop.mock.calls[0] as [Record<string, unknown>]
-    expect(request.groupActions).toEqual({ 框内: '框内竖' })
-    // 'inherit' 不落进请求 —— 不写那个字段就是跟随全场默认。
-    expect(request.groupDirections).toEqual({ 框外: 'vertical' })
-
-    // 再点一次、改成"跟随默认"，应彻底消失而不是留下 'inherit'。
-    await setGroupDirectionChoice(wrapper, '框外', 'inherit')
-    await wrapper.get('[data-testid="import-run-photoshop"]').trigger('click')
-    await flushPromises()
-    const [second] = runLabelPlusInPhotoshop.mock.calls[1] as [Record<string, unknown>]
-    expect(second.groupDirections).toEqual({})
-
-    wrapper.unmount()
-  })
-
-  it('分组映射表会把没勾选的分组标出来（避免以为它会一起导出）', async () => {
-    setupApi()
-    const wrapper = mount(Import, { global: { plugins: [createPinia()] } })
-    await wrapper.get('[data-testid="import-file-button"]').trigger('click')
-    await flushPromises()
-
-    await wrapper.get('[data-testid="import-groups-inside"]').trigger('click')
-    await flushPromises()
-
-    const row = wrapper.get('[data-testid="import-group-action-框外"]').element.closest('tr')
-    expect(row?.textContent).toContain('未勾选')
-
-    wrapper.unmount()
-  })
-
-  /**
-   * 2026-09-30 审查 critical：「清空图片」之后点生成，不许把整份图跑一遍。
-   *
-   * 「清空」把 `selectedImageNames` 置空（已选 0 张），而主进程原判据
-   * `selectedImages.size > 0 && !selectedImages.has(name)` 在 size === 0 时永不成立
-   * —— 空数组等于「全选」：整份文本的每一张图都会出图，勾了「覆盖已有 PSD」时
-   * 更是直接覆盖用户没勾的文件。
-   *
-   * 锁：0 张时**在渲染侧就拦住**（不发请求），并给一句明确的提示。
-   * 主进程侧的同一条语义由 labelplus-import-service.spec 锁着。
-   */
   it('图片被「清空」后点生成：不发请求，并提示要先选图片', async () => {
     const pinia = createPinia()
     const api = setupApi()
@@ -555,4 +386,26 @@ describe('Import view', () => {
 
     wrapper.unmount()
   })
+  it('locks import input while generating and removes the progress bubble after failure', async () => {
+    const api = setupApi()
+    const pinia = createPinia()
+    const wrapper = mount(Import, { global: { plugins: [pinia] } })
+    await wrapper.get('[data-testid="import-file-button"]').trigger('click')
+    await flushPromises()
+    let fail!: (error: Error) => void
+    api.generateLabelPlusPsd.mockImplementationOnce(() => new Promise((_resolve, reject) => { fail = reject }))
+    await wrapper.get('[data-testid="import-generate-button"]').trigger('click')
+    expect(wrapper.get('fieldset').attributes('disabled')).toBeDefined()
+    expect(useToastStore(pinia).toasts.some(item => item.type === 'loading')).toBe(true)
+    await wrapper.get('[data-testid="import-file-section"]').trigger('drop', { dataTransfer: { files: [new File(['x'], 'other.zip')] } })
+    expect(api.prepareLabelPlusInput).not.toHaveBeenCalled()
+    await wrapper.get('[data-testid="import-generate-button"]').trigger('click')
+    expect(api.generateLabelPlusPsd).toHaveBeenCalledTimes(1)
+    fail(new Error('write failed'))
+    await flushPromises()
+    expect(wrapper.get('fieldset').attributes('disabled')).toBeUndefined()
+    expect(useToastStore(pinia).toasts.some(item => item.type === 'loading')).toBe(false)
+    expect(useToastStore(pinia).toasts.some(item => item.message.includes('write failed'))).toBe(true)
+  })
+
 })

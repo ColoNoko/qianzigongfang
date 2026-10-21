@@ -222,3 +222,34 @@ describe('PsdWorkerPool', () => {
     pool.destroy()
   })
 })
+
+it('cancels active work, releases its worker and allows subsequent jobs', async () => {
+  const pool = new PsdWorkerPool(1)
+  const controller = new AbortController()
+  const cancelled = pool
+    .encode(new ArrayBuffer(8), { maxEdge: 480 }, controller.signal)
+    .catch((e) => e.name)
+  controller.abort()
+  expect(await cancelled).toBe('AbortError')
+  expect(createdWorkers[0].terminated).toBe(true)
+  const next = pool.parsePsd(new ArrayBuffer(8))
+  flushResponses()
+  expect((await next).width).toBe(100)
+  pool.destroy()
+})
+it('times out a stalled worker without leaving subsequent jobs blocked', async () => {
+  vi.useFakeTimers()
+  const pool = new PsdWorkerPool(1, 50)
+  try {
+    const failed = pool.parsePsd(new ArrayBuffer(8)).catch((e) => e.message)
+    await vi.advanceTimersByTimeAsync(50)
+    expect(await failed).toContain('timed out')
+    expect(createdWorkers[0].terminated).toBe(true)
+    const next = pool.parsePsd(new ArrayBuffer(8))
+    flushResponses()
+    expect((await next).width).toBe(100)
+  } finally {
+    pool.destroy()
+    vi.useRealTimers()
+  }
+})

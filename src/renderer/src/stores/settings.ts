@@ -1,4 +1,15 @@
+import { normalizeDuties } from '@shared/duties'
 import { defineStore } from 'pinia'
+import type { ParentProject } from '@shared/types'
+import { WORK_MODES } from '@shared/modes'
+import type { WorkMode } from '@shared/types'
+import { useToastStore } from './toast'
+
+export const WORK_MODES_STORAGE_KEY = 'ui.workModes'
+export function normalizeEnabledModes(value: unknown): WorkMode[] {
+  const modes = WORK_MODES.filter((mode) => Array.isArray(value) && value.includes(mode))
+  return modes.length ? modes : [...WORK_MODES]
+}
 import type { ThumbSize } from '@renderer/components/ThumbGrid.vue'
 import { DEFAULT_PROGRESS_SORT, isProgressSortValue } from '@shared/progress'
 import type { ChildSortOrder } from '@shared/chapter'
@@ -13,6 +24,8 @@ const THUMB_SIZE_STORAGE_KEY = 'ui.thumbSize'
 const CHILD_SORT_ORDER_STORAGE_KEY = 'ui.childSortOrder'
 const PROGRESS_SORT_STORAGE_KEY = 'ui.progressSort'
 const PROJECT_LIST_WIDTH_STORAGE_KEY = 'ui.projectListWidth'
+/** 对照视图「译文态」里原图那一栏的宽度（百分比）。2026-10-06 新增。 */
+const VIEWER_SPLIT_WIDTH_STORAGE_KEY = 'ui.viewerSplitWidth'
 const SILENT_SELF_CHECK_STORAGE_KEY = 'ui.selfCheckSilent'
 const LABEL_PLUS_FX_PATH_STORAGE_KEY = 'tools.labelPlusFxPath'
 const PHOTOSHOP_PATH_STORAGE_KEY = 'tools.photoshopPath'
@@ -21,6 +34,7 @@ const SKIP_PS_FALLBACK_STORAGE_KEY = 'tools.skipPsFallbackPrompt'
 const GUIDE_SEEN_VERSION_STORAGE_KEY = 'ui.guideSeenVersion'
 const PLAY_INTERVAL_STORAGE_KEY = 'ui.playIntervalMs'
 const AUTO_BACKUP_STORAGE_KEY = 'ui.autoBackup'
+const AUTO_INCREMENTAL_SCAN_STORAGE_KEY = 'ui.autoIncrementalScan'
 const ADVANCE_AFTER_MARK_STORAGE_KEY = 'ui.advanceAfterMark'
 const VALID_SIZES: readonly ThumbSize[] = ['大', '中', '小'] as const
 const DEFAULT_SIZE: ThumbSize = '中'
@@ -54,6 +68,31 @@ export const DEFAULT_PROJECT_LIST_WIDTH = 33.333
  */
 export const MIN_PROJECT_LIST_WIDTH = 15
 export const MAX_PROJECT_LIST_WIDTH = 80
+
+/**
+ * 对照视图「译文态」的左右分栏宽度（**存的是原图那一栏的百分比**）。
+ *
+ * 默认 66 / 34：译文是一列短文本，用不到原来那个 50/50 的一半宽（用户实测反馈
+ * "右栏用不到这么宽"）。PSD 对照态**不受它影响**（那边保持写死的 50/50 —— 两边一样
+ * 大才好比对），所以这一份只在有译文栏时生效。
+ *
+ * 与列表宽度同一条路：分隔条运行时按真实像素夹取，这里只防"库里被手改成不可用的值"。
+ */
+export const DEFAULT_VIEWER_SPLIT_WIDTH = 66
+export const MIN_VIEWER_SPLIT_WIDTH = 45
+export const MAX_VIEWER_SPLIT_WIDTH = 80
+
+/**
+ * 与 `normalizeProjectListWidth` 同一条路（缺失 / 空串 / 非数 / 乱码一律回默认，
+ * 有限值四舍五入到 3 位小数再夹进合法带）。
+ */
+export function normalizeViewerSplitWidth(value: unknown): number {
+  if (value === null || value === undefined || value === '') return DEFAULT_VIEWER_SPLIT_WIDTH
+  const numeric = typeof value === 'number' ? value : Number(value)
+  if (!Number.isFinite(numeric)) return DEFAULT_VIEWER_SPLIT_WIDTH
+  const rounded = Math.round(numeric * 1000) / 1000
+  return Math.min(MAX_VIEWER_SPLIT_WIDTH, Math.max(MIN_VIEWER_SPLIT_WIDTH, rounded))
+}
 
 function isValidSize(v: unknown): v is ThumbSize {
   return typeof v === 'string' && (VALID_SIZES as readonly string[]).includes(v)
@@ -101,6 +140,16 @@ export function normalizePlayIntervalMs(value: unknown): number {
 
 export const useSettingsStore = defineStore('settings', {
   state: () => ({
+    homeStyle: 'default' as 'default' | 'modern',
+    savingHomeStyle: false,
+    startupPage: 'home' as 'home' | 'project',
+    savingStartupPage: false,
+    enabledWorkModes: [...WORK_MODES] as WorkMode[],
+    defaultImportDuties: ['typeset'] as WorkMode[],
+    dutyModePriority: 'slower' as 'slower' | 'faster',
+    activeWorkMode: 'typeset' as WorkMode,
+    projectWorkModes: {} as Record<string, WorkMode>,
+    savingWorkModes: false,
     thumbSize: DEFAULT_SIZE as ThumbSize,
     childSortOrder: DEFAULT_SORT_ORDER as ChildSortOrder,
     /**
@@ -114,6 +163,11 @@ export const useSettingsStore = defineStore('settings', {
      * hard-coded to 33.333% on every mount).
      */
     projectListWidth: DEFAULT_PROJECT_LIST_WIDTH,
+    /**
+     * 对照视图译文态里**原图那一栏**的宽度（百分比）。译文栏用不到一半宽，
+     * 所以默认 66/34；用户拖过就记住。
+     */
+    viewerSplitWidth: DEFAULT_VIEWER_SPLIT_WIDTH,
     silentSelfCheck: false,
     /**
      * Absolute path of the external translation/proofreading editor (for
@@ -138,7 +192,7 @@ export const useSettingsStore = defineStore('settings', {
      * `ui.guideSeenVersion` —— 新手引导"看过哪一版"。
      *
      * 存**版本号**而不是 true/false：以后给引导加一页，只要把
-     * `features/guide/guide-pages.ts` 的 `GUIDE_VERSION` +1，
+     * `features/guide/guide-config.ts` 的 `GUIDE_VERSION` +1，
      * 老用户就会再看到一次更新后的引导；存布尔的话只能二选一
      * （要么老用户永远看不到新页，要么所有人都被重弹一次）。
      * 0 = 从没看过（也是缺失/非法值的回落）。
@@ -156,12 +210,15 @@ export const useSettingsStore = defineStore('settings', {
      * 开关就放在对照视图页头（标记按钮旁边），因为你只有在那种"一张张过"的场合才想开它。
      */
     advanceAfterMark: false,
+    anchorScale: 100,
+    invertWheel: false,
     /**
      * `ui.autoBackup` —— 启动时若距最近一份备份超过 12 小时，就自动做一份（第十四轮）。
      * **默认开**：这个项目真的丢过标记，兜底不该要用户先去发现开关。
      * 主进程读的是同一格（见 `main/index.ts` 的 `maybeAutoBackup`），所以这里只是同一份设置的另一半。
      */
     autoBackup: true,
+    autoIncrementalScan: false,
     /**
      * `loadSettings()` 是否已经跑完一轮。
      *
@@ -188,6 +245,70 @@ export const useSettingsStore = defineStore('settings', {
   },
 
   actions: {
+    modeForProject(parent: ParentProject, duties = parent.duties ?? []): WorkMode {
+      const remembered = this.projectWorkModes[parent.id]
+      const available = duties.filter(mode => this.enabledWorkModes.includes(mode))
+      if (remembered && this.enabledWorkModes.includes(remembered) && (!available.length || available.includes(remembered))) return remembered
+      return this.activeWorkMode
+    },
+    async setProjectWorkMode(parentId: string, mode: WorkMode): Promise<void> {
+      if (!parentId || !this.enabledWorkModes.includes(mode)) return
+      this.projectWorkModes = { ...this.projectWorkModes, [parentId]: mode }
+
+    },
+    async setStartupPage(page: 'home' | 'project'): Promise<void> {
+      if (this.savingStartupPage || !['home', 'project'].includes(page)) return
+      this.savingStartupPage = true
+      try {
+        await window.comicType.storeSet('ui.startupPage', page)
+        this.startupPage = page
+      } catch { useToastStore().addToast({ type: 'error', message: '启动页面保存失败' }) }
+      finally { this.savingStartupPage = false }
+    },
+    async setHomeStyle(style: 'default' | 'modern'): Promise<void> {
+      if (this.savingHomeStyle || !['default', 'modern'].includes(style)) return
+      this.savingHomeStyle = true
+      try {
+        await window.comicType.storeSet('ui.homeStyle', style)
+        this.homeStyle = style
+      } catch { useToastStore().addToast({ type: 'error', message: '首页样式保存失败' }) }
+      finally { this.savingHomeStyle = false }
+    },
+    async saveImportDuties(duties: WorkMode[], priority?: 'slower' | 'faster'): Promise<void> {
+      priority ??= this.dutyModePriority
+      const clean = normalizeDuties(duties)
+      try {
+        await window.comicType.storeSet('ui.importDuties', { duties: clean, priority })
+        this.defaultImportDuties = clean
+        this.dutyModePriority = priority
+      } catch { useToastStore().addToast({ type: 'error', message: '默认职责保存失败' }) }
+    },
+    async saveWorkModes(enabled: WorkMode[], active?: WorkMode): Promise<void> {
+      if (this.savingWorkModes || enabled.length === 0) return
+      const modes = normalizeEnabledModes(enabled)
+      const requested = active ?? this.activeWorkMode
+      const selected = modes.includes(requested) ? requested : modes[0]
+      this.savingWorkModes = true
+      try {
+        await window.comicType.storeSet(WORK_MODES_STORAGE_KEY, { enabled: modes, active: selected })
+        this.enabledWorkModes = modes
+        this.activeWorkMode = selected
+        this.projectWorkModes = {}
+      } catch {
+        useToastStore().addToast({ type: 'error', message: '工作模式保存失败，请重试' })
+      } finally {
+        this.savingWorkModes = false
+      }
+    },
+    async setActiveWorkMode(mode: WorkMode): Promise<void> {
+      if (!WORK_MODES.includes(mode)) return
+      if (mode === this.activeWorkMode) { this.projectWorkModes = {}; return }
+      await this.saveWorkModes(this.enabledWorkModes, mode)
+    },
+    setAutoIncrementalScan(enabled: boolean): void {
+      this.autoIncrementalScan = enabled
+      void window.comicType.storeSet(AUTO_INCREMENTAL_SCAN_STORAGE_KEY, enabled)
+    },
     /**
      * Persist the thumb size to electron-store and update state.
      * The IPC call is fire-and-forget (voided) — the state update is
@@ -222,6 +343,16 @@ export const useSettingsStore = defineStore('settings', {
       void window.comicType.storeSet(PROJECT_LIST_WIDTH_STORAGE_KEY, normalized)
     },
 
+    /**
+     * 对照视图译文态的左右分栏宽度（**原图那一栏的百分比**）。分隔条松手时调一次。
+     */
+    setViewerSplitWidth(percent: number): void {
+      const normalized = normalizeViewerSplitWidth(percent)
+      if (normalized === this.viewerSplitWidth) return
+      this.viewerSplitWidth = normalized
+      void window.comicType.storeSet(VIEWER_SPLIT_WIDTH_STORAGE_KEY, normalized)
+    },
+
     setSilentSelfCheck(enabled: boolean): void {
       this.silentSelfCheck = enabled
       void window.comicType.storeSet(SILENT_SELF_CHECK_STORAGE_KEY, enabled)
@@ -251,6 +382,16 @@ export const useSettingsStore = defineStore('settings', {
     setSkipPsFallbackPrompt(skip: boolean): void {
       this.skipPsFallbackPrompt = skip
       void window.comicType.storeSet(SKIP_PS_FALLBACK_STORAGE_KEY, skip)
+    },
+
+    setAnchorScale(value: number): void {
+      this.anchorScale = Number.isFinite(value) ? Math.max(30, Math.min(200, Math.round(value))) : 100
+      document.documentElement.style.setProperty('--translation-anchor-scale', String(this.anchorScale / 100))
+      void window.comicType.storeSet('ui.anchorScale', this.anchorScale)
+    },
+    setInvertWheel(enabled: boolean): void {
+      this.invertWheel = enabled
+      void window.comicType.storeSet('ui.invertWheel', enabled)
     },
 
     setAdvanceAfterMark(enabled: boolean): void {
@@ -306,7 +447,14 @@ export const useSettingsStore = defineStore('settings', {
           rawPlayIntervalMs,
           rawAutoBackup,
           rawAdvanceAfterMark,
-          rawProgressSort
+          rawProgressSort,
+          rawAutoIncrementalScan,
+          rawWorkModes,
+          rawViewerSplitWidth,
+          rawInvertWheel,
+          rawHomeStyle,
+          rawStartupPage,
+          rawAnchorScale
         ] = await Promise.all([
           window.comicType.storeGet(THUMB_SIZE_STORAGE_KEY),
           window.comicType.storeGet(CHILD_SORT_ORDER_STORAGE_KEY),
@@ -320,9 +468,30 @@ export const useSettingsStore = defineStore('settings', {
           window.comicType.storeGet(PLAY_INTERVAL_STORAGE_KEY),
           window.comicType.storeGet(AUTO_BACKUP_STORAGE_KEY),
           window.comicType.storeGet(ADVANCE_AFTER_MARK_STORAGE_KEY),
-          window.comicType.storeGet(PROGRESS_SORT_STORAGE_KEY)
+          window.comicType.storeGet(PROGRESS_SORT_STORAGE_KEY),
+          window.comicType.storeGet(AUTO_INCREMENTAL_SCAN_STORAGE_KEY),
+          window.comicType.storeGet(WORK_MODES_STORAGE_KEY),
+          window.comicType.storeGet(VIEWER_SPLIT_WIDTH_STORAGE_KEY),
+          window.comicType.storeGet('ui.invertWheel'),
+          window.comicType.storeGet('ui.homeStyle'),
+          window.comicType.storeGet('ui.startupPage'),
+          window.comicType.storeGet('ui.anchorScale')
         ])
+        this.anchorScale = typeof rawAnchorScale === 'number' && Number.isFinite(rawAnchorScale) ? Math.max(30, Math.min(200, Math.round(rawAnchorScale))) : 100
+        document.documentElement.style.setProperty('--translation-anchor-scale', String(this.anchorScale / 100))
+        this.startupPage = rawStartupPage === 'project' ? 'project' : 'home'
+        this.homeStyle = rawHomeStyle === 'modern' ? 'modern' : 'default'
+        this.invertWheel = rawInvertWheel === true
         this.thumbSize = isValidSize(rawThumbSize) ? rawThumbSize : DEFAULT_SIZE
+        const workModes = rawWorkModes as { enabled?: unknown; active?: WorkMode } | null
+        this.enabledWorkModes = [...WORK_MODES]
+        this.projectWorkModes = {}
+        const dutyDefaults = await window.comicType.storeGet('ui.importDuties') as { duties?: WorkMode[]; priority?: string } | null
+        this.defaultImportDuties = normalizeDuties(dutyDefaults?.duties ?? (workModes?.enabled ?? ['typeset']))
+        this.dutyModePriority = dutyDefaults?.priority === 'faster' ? 'faster' : 'slower'
+        this.activeWorkMode = workModes?.active && this.enabledWorkModes.includes(workModes.active)
+          ? workModes.active : this.enabledWorkModes[0]
+        this.autoIncrementalScan = rawAutoIncrementalScan === true
         this.childSortOrder = isValidSortOrder(rawSortOrder) ? rawSortOrder : DEFAULT_SORT_ORDER
         this.projectListWidth = normalizeProjectListWidth(rawListWidth)
         this.silentSelfCheck = rawSilentSelfCheck === true
@@ -334,12 +503,17 @@ export const useSettingsStore = defineStore('settings', {
         this.playIntervalMs = normalizePlayIntervalMs(rawPlayIntervalMs)
         this.autoBackup = rawAutoBackup !== false
         this.advanceAfterMark = rawAdvanceAfterMark === true
-        this.progressSort = isProgressSortValue(rawProgressSort) ? rawProgressSort : DEFAULT_PROGRESS_SORT
+        this.progressSort = isProgressSortValue(rawProgressSort)
+          ? rawProgressSort
+          : DEFAULT_PROGRESS_SORT
+        this.viewerSplitWidth = normalizeViewerSplitWidth(rawViewerSplitWidth)
       } catch {
+        this.invertWheel = false
         this.thumbSize = DEFAULT_SIZE
         this.childSortOrder = DEFAULT_SORT_ORDER
         this.progressSort = DEFAULT_PROGRESS_SORT
         this.projectListWidth = DEFAULT_PROJECT_LIST_WIDTH
+        this.viewerSplitWidth = DEFAULT_VIEWER_SPLIT_WIDTH
         this.silentSelfCheck = false
         this.labelPlusFxPath = ''
         this.photoshopPath = ''

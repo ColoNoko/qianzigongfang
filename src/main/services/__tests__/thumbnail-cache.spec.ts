@@ -1,68 +1,84 @@
+import { DatabaseSync } from 'node:sqlite'
+import { previewCachePath } from '../preview-cache'
 // @vitest-environment node
-/**
- * PSD 缩略图缓存：**跨会话持久化**（2026-10-01）。
- *
- * 旧实现每个进程启动时 `rmSync` 掉整个缓存目录，理由是"崩溃会留下垃圾会话目录"。
- * 代价是：用户把某一话的文件夹删掉/移走之后，重启程序就再也看不到那一话的缩略图了
- * —— 而目录不在时，缩略图唯一能依赖的就是这份缓存。清空它等于让"删图后仍可查看"失效。
- *
- * 这里锁两件事：
- *   ① 写进去的缩略图**跨模块重载（≈ 新进程）仍读得到** —— 这就是"不再启动即清空"；
- *   ② 超限淘汰按**最早写入**先删（策略抽成纯函数 pickEvictions 才能直接测）。
- */
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
-import { mkdir, rm } from 'node:fs/promises'
-import { resolve } from 'node:path'
-
+import { mkdir, rm, writeFile, stat, utimes, readdir } from 'node:fs/promises'
+import { createHash } from 'node:crypto'
+import { resolve, join } from 'node:path'
 const ROOT = resolve(__dirname, '../../../../.omo/fixtures/thumbnail-cache-test')
-
-vi.mock('electron', () => ({
-  app: { getPath: () => ROOT }
-}))
-
-import { pickEvictions, readPsdThumbnailCache, writePsdThumbnailCache } from '../thumbnail-cache'
-
-const PNG_PREFIX = 'data:image/png;base64,'
-const SAMPLE = `${PNG_PREFIX}${Buffer.from('fake-png-bytes').toString('base64')}`
-
+vi.mock('electron', () => ({ app: { getPath: () => ROOT } }))
+import {
+  pickEvictions,
+  readPsdThumbnailCache,
+  writePsdThumbnailCache,
+  writePsdThumbnailBytes,
+  invalidatePsdThumbnail
+} from '../thumbnail-cache'
+const PNG = Buffer.from(
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a3ioAAAAASUVORK5CYII=',
+  'base64'
+)
+const SAMPLE = 'data:image/png;base64,' + PNG.toString('base64')
 beforeAll(async () => {
-  await rm(ROOT, { recursive: true, force: true })
   await mkdir(ROOT, { recursive: true })
 })
-
 afterAll(async () => {
   await rm(ROOT, { recursive: true, force: true })
 })
-
-describe('缩略图缓存', () => {
-  it('写进去就能读回来', async () => {
-    await writePsdThumbnailCache('D:\\comic\\ch1\\001.psd', 1000, SAMPLE)
-
-    await expect(readPsdThumbnailCache('D:\\comic\\ch1\\001.psd', 1000)).resolves.toBe(SAMPLE)
+async function source(name: string) {
+  const path = join(ROOT, name)
+  await writeFile(path, 'source')
+  await utimes(path, new Date(1000), new Date(1000))
+  return { path, mtime: (await stat(path)).mtimeMs }
+}
+describe('persistent versioned thumbnail cache', () => {
+  it('round-trips a PNG through binary and compatibility APIs', async () => {
+    const { path, mtime } = await source('roundtrip.psd')
+    await writePsdThumbnailBytes(path, mtime, PNG)
+    expect(await readPsdThumbnailCache(path, mtime)).toBe(SAMPLE)
+    await invalidatePsdThumbnail(path, mtime)
+    expect(await readPsdThumbnailCache(path, mtime)).toBeNull()
   })
-
-  it('键里带 mtime：PSD 改过之后不会命中旧图', async () => {
-    await writePsdThumbnailCache('D:\\comic\\ch1\\002.psd', 1000, SAMPLE)
-
-    await expect(readPsdThumbnailCache('D:\\comic\\ch1\\002.psd', 2000)).resolves.toBeNull()
+  it('rejects changed mtime and changed size even with restored mtime', async () => {
+    const { path, mtime } = await source('revision.psd')
+    await writePsdThumbnailCache(path, mtime, SAMPLE)
+    expect(await readPsdThumbnailCache(path, mtime + 1)).toBeNull()
+    await writeFile(path, 'different size')
+    await utimes(path, new Date(mtime), new Date(mtime))
+    expect(await readPsdThumbnailCache(path, mtime)).toBeNull()
   })
-
-  it('没写过的路径返回 null（不抛错）', async () => {
-    await expect(readPsdThumbnailCache('D:\\comic\\ch1\\never-written.psd', 1)).resolves.toBeNull()
-  })
-
-  it('★ 跨"重启"仍读得到：模块重载会清掉模块级状态，但缓存文件必须还在', async () => {
-    const path = 'D:\\comic\\ch1\\persist.psd'
-    await writePsdThumbnailCache(path, 3000, SAMPLE)
-
-    // 重新加载模块 ≈ 新进程启动。旧实现在这一步会 rmSync 整个缓存目录。
+  it('retains offline history across module reloads', async () => {
+    const { path, mtime } = await source('offline.psd')
+    await writePsdThumbnailCache(path, mtime, SAMPLE)
+    await rm(path)
     vi.resetModules()
     const fresh = await import('../thumbnail-cache')
-
-    await expect(fresh.readPsdThumbnailCache(path, 3000)).resolves.toBe(SAMPLE)
+    expect(await fresh.readPsdThumbnailCache(path, mtime)).toBe(SAMPLE)
+  })
+  it('reads legacy caches for deleted sources but not live unversioned sources', async () => {
+    const { path, mtime } = await source('legacy.psd')
+    const dir = join(ROOT, 'qianzi-gongfang-psd-thumbnails')
+    await mkdir(dir, { recursive: true })
+    const name = createHash('sha256').update(`${path}\0${mtime}`).digest('hex') + '.png'
+    await writeFile(join(dir, name), PNG)
+    expect(await readPsdThumbnailCache(path, mtime)).toBeNull()
+    await rm(path)
+    expect(await readPsdThumbnailCache(path, mtime)).toBe(SAMPLE)
+  })
+  it('rejects malformed PNGs and corrupt entries without blocking recovery', async () => {
+    const { path, mtime } = await source('corrupt.png')
+    await writePsdThumbnailBytes(path, mtime, Buffer.from('fake PNG'))
+    expect(await readPsdThumbnailCache(path, mtime)).toBeNull()
+    await writePsdThumbnailBytes(path, mtime, PNG)
+    const db = new DatabaseSync(previewCachePath())
+    db.prepare('UPDATE previews SET payload=? WHERE kind=?').run(Buffer.from('corrupt'),'thumbnail')
+    db.close()
+    expect(await readPsdThumbnailCache(path, mtime)).toBeNull()
+    await writePsdThumbnailBytes(path, mtime, PNG)
+    expect(await readPsdThumbnailCache(path, mtime)).toBe(SAMPLE)
+    expect(await readdir(join(ROOT,'cache'))).toContain('previews.sqlite')
   })
 })
-
 describe('pickEvictions（淘汰策略）', () => {
   const entry = (path: string, size: number, mtimeMs: number) => ({ path, size, mtimeMs })
 
@@ -73,11 +89,7 @@ describe('pickEvictions（淘汰策略）', () => {
   })
 
   it('超限时按最早写入先删，删到刚好回到上限内', () => {
-    const entries = [
-      entry('newest', 40, 300),
-      entry('oldest', 40, 100),
-      entry('middle', 40, 200)
-    ]
+    const entries = [entry('newest', 40, 300), entry('oldest', 40, 100), entry('middle', 40, 200)]
 
     // 总量 120 > 100：删掉 oldest(40) 后是 80 ≤ 100，就停手。
     expect(pickEvictions(entries, 100).map((item) => item.path)).toEqual(['oldest'])

@@ -1,6 +1,9 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { flushPromises, mount } from '@vue/test-utils'
+import { config, enableAutoUnmount, flushPromises, mount } from '@vue/test-utils'
+config.global.stubs.teleport = true
+config.global.renderStubDefaultSlot = true
+enableAutoUnmount(afterEach)
 import { createPinia, setActivePinia } from 'pinia'
 import type { FontListResult, SystemFontInfo } from '@shared/ipc-api'
 import FontManager from '../FontManager.vue'
@@ -71,6 +74,7 @@ function setupApi() {
   })
   const openExternal = vi.fn().mockResolvedValue({ ok: true })
   window.comicType = {
+    fontPreview: vi.fn().mockResolvedValue({ buffer: new ArrayBuffer(4), coverage: [[0, 65535]] }),
     fontList,
     fontInstall,
     fontUninstall,
@@ -80,20 +84,37 @@ function setupApi() {
   return { fontList, fontInstall, fontUninstall, fontUninstallMany, openExternal }
 }
 
-function mountFontManager() {
+function mountFontManager(mode: 'system' | 'folder' | null = 'system') {
   const pinia = createPinia()
   setActivePinia(pinia)
+  const wrapper = mount(FontManager, { global: { plugins: [pinia] } })
+  if (mode) void wrapper.get(`[data-testid="font-mode-${mode}"]`).trigger('click')
   return {
-    wrapper: mount(FontManager, { global: { plugins: [pinia] } }),
+    wrapper,
     toast: useToastStore(pinia)
   }
 }
 
 beforeEach(() => {
+  vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockReturnValue(924)
+  vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockReturnValue(600)
   vi.useFakeTimers()
+  Object.defineProperty(document, 'fonts', {
+    configurable: true,
+    value: { add: vi.fn(), delete: vi.fn() }
+  })
+  vi.stubGlobal(
+    'FontFace',
+    class {
+      async load() {
+        return this
+      }
+    }
+  )
 })
 
 afterEach(() => {
+  vi.unstubAllGlobals()
   vi.useRealTimers()
   vi.restoreAllMocks()
 })
@@ -138,7 +159,7 @@ describe('FontManager', () => {
 
     expect(fontInstall).toHaveBeenCalledOnce()
     expect(fontList).toHaveBeenCalledTimes(2)
-    expect(wrapper.get('[data-testid="font-filter-managed"]').classes()).toContain('bg-accent')
+    expect(wrapper.get('[data-testid="font-filter-managed"]').attributes('data-state')).toBe('on')
     expect(toast.toasts.some((item) => item.message === '已安装 1 个字体')).toBe(true)
 
     wrapper.unmount()
@@ -165,10 +186,13 @@ describe('FontManager', () => {
     await flushPromises()
 
     await wrapper.get('[data-testid="font-card-size-medium"]').trigger('click')
-    expect(wrapper.get('[data-testid="font-list"] > div').classes()).toContain('grid-cols-3')
+    expect(wrapper.get('[data-testid="font-list"] > div').attributes('style')).toContain(
+      'repeat(3, minmax(0, 1fr))'
+    )
     expect(wrapper.get('[data-testid="font-card-system-font"]').classes()).toContain('h-48')
 
-    await wrapper.get('[data-testid="font-preview-weight"]').setValue('500')
+    wrapper.findAllComponents({ name: 'AppSelect' }).find(c => c.props('testId') === 'font-preview-weight')!.vm.$emit('update:modelValue', '500')
+    await flushPromises()
     await wrapper.get('[data-testid="font-preview-bold"]').trigger('click')
     await wrapper.get('[data-testid="font-preview-italic"]').trigger('click')
     await wrapper.get('[data-testid="font-preview-vertical"]').trigger('click')
@@ -181,23 +205,20 @@ describe('FontManager', () => {
     wrapper.unmount()
   })
 
-  it('loads fonts in batches of 50, 100, or all', async () => {
-    const manyFonts = Array.from({ length: 120 }, (_, index): SystemFontInfo => ({
-      ...fonts[0],
-      id: `font-${index}`,
-      family: `Font ${index}`
-    }))
-    const api = setupApi()
-    api.fontList.mockResolvedValue(fontResult(manyFonts))
+  it('virtualizes a thousand faces and scrolls to the final face without a load-more button', async () => {
+    const { fontList } = setupApi()
+    fontList.mockResolvedValue(
+      fontResult(Array.from({ length: 1000 }, (_, i) => ({ ...fonts[0], id: `font-${i}` })))
+    )
     const { wrapper } = mountFontManager()
     await flushPromises()
-
-    expect(wrapper.findAll('article[data-testid^="font-card-"]')).toHaveLength(50)
-    await wrapper.get('[data-testid="font-load-batch"]').setValue('100')
-    expect(wrapper.findAll('article[data-testid^="font-card-"]')).toHaveLength(100)
-    await wrapper.get('[data-testid="font-load-batch"]').setValue('all')
-    expect(wrapper.findAll('article[data-testid^="font-card-"]')).toHaveLength(120)
-
+    expect(wrapper.findAll('article').length).toBeLessThan(40)
+    const list = wrapper.get('[data-testid="font-list"]')
+    Object.defineProperty(list.element, 'scrollTop', { value: 497 * 236, configurable: true })
+    await list.trigger('scroll')
+    await flushPromises()
+    expect(wrapper.find('[data-testid="font-card-font-999"]').exists()).toBe(true)
+    expect(wrapper.findAll('article').length).toBeLessThan(40)
     wrapper.unmount()
   })
 
@@ -206,8 +227,8 @@ describe('FontManager', () => {
     const { wrapper } = mountFontManager()
     await flushPromises()
 
-    await wrapper.get('[data-testid="font-language-filter-trigger"]').trigger('click')
-    await wrapper.get('[data-testid="font-language-filter-option-japanese"]').trigger('click')
+    wrapper.findAllComponents({ name: 'AppSelect' }).find(c => c.props('testId') === 'font-language-filter')!.vm.$emit('update:modelValue', 'japanese')
+    await flushPromises()
 
     expect(wrapper.find('[data-testid="font-card-user-font"]').exists()).toBe(true)
     expect(wrapper.find('[data-testid="font-card-system-font"]').exists()).toBe(false)
@@ -236,8 +257,8 @@ describe('FontManager', () => {
     const { wrapper, toast } = mountFontManager()
     await flushPromises()
 
-    await wrapper.get('[data-testid="font-language-filter-trigger"]').trigger('click')
-    await wrapper.get('[data-testid="font-language-filter-option-japanese"]').trigger('click')
+    wrapper.findAllComponents({ name: 'AppSelect' }).find(c => c.props('testId') === 'font-language-filter')!.vm.$emit('update:modelValue', 'japanese')
+    await flushPromises()
     expect(wrapper.find('[data-testid="font-card-user-font"]').exists()).toBe(true)
 
     await wrapper.get('[data-testid="font-refresh"]').trigger('click')
@@ -306,3 +327,62 @@ describe('FontManager', () => {
     wrapper.unmount()
   })
 })
+
+it('starts at source selection without scanning until requested', async () => {
+  const { fontList } = setupApi()
+  const { wrapper } = mountFontManager(null)
+  await flushPromises()
+  expect(fontList).not.toHaveBeenCalled()
+  await wrapper.get('[data-testid="font-mode-system"]').trigger('click')
+  await flushPromises()
+  expect(fontList).toHaveBeenCalledOnce()
+  wrapper.unmount()
+})
+it('keeps the current folder after cancelling replacement and discards late results after returning', async () => {
+  setupApi()
+  const fontListFolder = vi
+    .fn()
+    .mockResolvedValue({
+      ...fontResult(fonts.map((f) => ({ ...f, source: 'folder' }))),
+      canceled: false,
+      folderPath: 'C:/fonts'
+    })
+  window.comicType.fontListFolder = fontListFolder
+  const { wrapper } = mountFontManager('folder')
+  await flushPromises()
+  expect(wrapper.text()).toContain('C:/fonts')
+  fontListFolder.mockResolvedValueOnce({ ...fontResult([]), canceled: true })
+  await wrapper.get('[data-testid="font-choose-another-folder"]').trigger('click')
+  await flushPromises()
+  expect(wrapper.findAll('article')).toHaveLength(3)
+  expect(wrapper.text()).toContain('C:/fonts')
+  let resolve!: (value: unknown) => void
+  fontListFolder.mockImplementationOnce(
+    () =>
+      new Promise((r) => {
+        resolve = r
+      })
+  )
+  await wrapper.get('[data-testid="font-refresh"]').trigger('click')
+  await wrapper.get('[data-testid="font-back-to-mode"]').trigger('click')
+  resolve({ ...fontResult(fonts), canceled: false, folderPath: 'C:/stale' })
+  await flushPromises()
+  expect(wrapper.find('[data-testid="font-mode-picker"]').exists()).toBe(true)
+  expect(wrapper.findAll('article')).toHaveLength(0)
+  wrapper.unmount()
+})
+it('compares selected protected and user fonts while keeping uninstall restricted', async () => {
+  setupApi()
+  const { wrapper } = mountFontManager()
+  await flushPromises()
+  await wrapper.get('[data-testid="font-selection-enter"]').trigger('click')
+  await wrapper.get('[data-testid="font-card-system-font"]').trigger('keydown', { key: 'Enter' })
+  await wrapper.get('[data-testid="font-card-managed-font"]').trigger('click')
+  await wrapper.get('[data-testid="font-selection-compare"]').trigger('click')
+  expect(wrapper.findAll('article')).toHaveLength(2)
+  expect(wrapper.get('[data-testid="font-selection-uninstall"]').text()).toContain('(1)')
+  wrapper.unmount()
+})
+
+// Confirmation UI is covered separately; preserve these business decision tests.
+vi.mock('@renderer/services/confirm', () => ({ confirmAction: (message: string) => Promise.resolve(window.confirm(message)) }))

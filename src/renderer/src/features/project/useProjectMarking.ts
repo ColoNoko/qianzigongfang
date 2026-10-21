@@ -1,4 +1,6 @@
-import { computed, ref, type ComputedRef, type Ref } from 'vue'
+import { confirmAction } from '@renderer/services/confirm'
+import { computed, ref, watch, type ComputedRef, type Ref } from 'vue'
+import { useSettingsStore } from '@renderer/stores/settings'
 import type { JpgPsdPair, ParentProject, WorkMode } from '@shared/types'
 import { WORK_MODE_LABELS } from '@shared/modes'
 import { psdStatsFromPairs, useProjectWorkspace } from '@renderer/stores/projectWorkspace'
@@ -18,6 +20,7 @@ import {
 export interface UseProjectMarkingOptions {
   pairs: Ref<JpgPsdPair[]>
   currentParent: ComputedRef<ParentProject | null>
+  currentMode?: ComputedRef<WorkMode>
 }
 
 export function useProjectMarking(options: UseProjectMarkingOptions) {
@@ -25,7 +28,12 @@ export function useProjectMarking(options: UseProjectMarkingOptions) {
   const achievements = useAchievementsStore()
 
   const selectedPairs = ref<JpgPsdPair[]>([])
-  const activeMode = ref<WorkMode>('typeset')
+  const settings = useSettingsStore()
+  const activeMode = computed({
+    get: () => options.currentMode?.value ?? (options.currentParent.value ? settings.modeForProject(options.currentParent.value) : settings.activeWorkMode),
+    set: (mode: WorkMode) => { const parent = options.currentParent.value; if (parent) void settings.setProjectWorkMode(parent.id, mode); else void settings.setActiveWorkMode(mode) }
+  })
+  watch(activeMode, () => { selectedPairs.value = [] })
 
   const activeModeDoneLabel = computed(() => WORK_MODE_LABELS[activeMode.value])
   const activeModePendingLabel = computed(() => `未${activeModeDoneLabel.value}`)
@@ -71,7 +79,7 @@ export function useProjectMarking(options: UseProjectMarkingOptions) {
     if (!activeChild) return
 
     if (status === 'done' && !currentChildHasPsdSource()) {
-      const confirmed = window.confirm(
+      const confirmed = await confirmAction(
         '该子项目无 PSD 文件，强制标记为已嵌字可能导致后续无法还原。确认继续吗？'
       )
       if (!confirmed) return
@@ -98,8 +106,9 @@ export function useProjectMarking(options: UseProjectMarkingOptions) {
   }
 
   async function onMark(pair: JpgPsdPair): Promise<void> {
-    const nextStatus = pair.psd.status === 'done' ? 'pending' : 'done'
-    await markPairs([pair], nextStatus, newMarkContext('card', nextStatus))
+    const done = pair.psd.modes?.[activeMode.value] ??
+      (activeMode.value === 'typeset' && pair.psd.status === 'done')
+    await markTargetsForActiveMode([pair], done ? 'pending' : 'done', 'card')
   }
 
   function onSelectionChange(nextSelectedPairs: JpgPsdPair[]): void {

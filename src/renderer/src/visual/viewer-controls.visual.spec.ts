@@ -90,8 +90,18 @@ async function settle(): Promise<void> {
   await nextTick()
 }
 
-/** 取 CompareViewer 的原始 HTML（定位上下文由调用方套，见下面两个 mountXxxPanel）。 */
-async function compareHtmlOf(options: { imageOnly: boolean; thumbStripOpen: boolean }): Promise<string> {
+/**
+ * 取 CompareViewer 的原始 HTML（定位上下文由调用方套，见下面两个 mountXxxPanel）。
+ *
+ * ⚠️ 2026-10-07 追加 `revealPagers` 的**嵌/监**用法：把**两个显隐区都点亮**
+ * （原图栏看图区 + PSD 栏画面区），一次拍出"上一页在原图左缘、下一页在 PSD 画面右缘"。
+ */
+async function compareHtmlOf(options: {
+  imageOnly: boolean
+  thumbStripOpen: boolean
+  /** 鼠标移进看图区 → 切页按钮淡入（P1.1）；不给就是"平时隐身"的样子。 */
+  revealPagers?: boolean
+}): Promise<string> {
   mockParsePsd.mockResolvedValue({
     width: 200,
     height: 200,
@@ -104,11 +114,20 @@ async function compareHtmlOf(options: { imageOnly: boolean; thumbStripOpen: bool
       folderPath: '/漫画/第10話',
       visible: true,
       imageOnly: options.imageOnly,
-      thumbStripOpen: options.thumbStripOpen
+      thumbStripOpen: options.thumbStripOpen,
+      // 2026-10-06：原图那一行右端多了页码（8/14 —— 与胶片条那 14 张、当前第 8 张对得上）
+      pageNumber: 8,
+      pageCount: 14
     },
     global: { stubs: { ImageViewer: ImageViewerStub } }
   })
   await settle()
+  if (options.revealPagers) {
+    // 两个显隐区都点亮：原图栏看图区 + PSD 栏画面区（2026-10-07）
+    await wrapper.get('[data-testid="compare-image-pane-body"]').trigger('pointerenter')
+    const psdBody = wrapper.find('[data-testid="compare-psd-pane-body"]')
+    if (psdBody.exists()) await psdBody.trigger('pointerenter')
+  }
   const html = wrapper.html()
   wrapper.unmount()
   return html
@@ -143,9 +162,7 @@ beforeEach(() => {
     storeSet: vi.fn(() => Promise.resolve(undefined)),
     projectGetTree: vi.fn(() => Promise.resolve([])),
     projectSaveProgress: vi.fn(() => Promise.resolve(undefined)),
-    scanChildProject: vi.fn(() =>
-      Promise.resolve({ jpgPairs: [], txtFiles: [], errors: [] })
-    ),
+    scanChildProject: vi.fn(() => Promise.resolve({ jpgPairs: [], txtFiles: [], errors: [] })),
     listDir: vi.fn(() => Promise.resolve([])),
     stat: vi.fn(() => Promise.resolve(null)),
     openPath: vi.fn(() => Promise.resolve({ ok: true })),
@@ -153,7 +170,11 @@ beforeEach(() => {
   }
   // jsdom 没有 canvas，组件里的 bitmapToUrl() 需要这两个。
   HTMLCanvasElement.prototype.getContext = vi.fn(
-    () => ({ drawImage: vi.fn(), getImageData: vi.fn(() => ({ data: new Uint8ClampedArray(4) })) }) as unknown as CanvasRenderingContext2D
+    () =>
+      ({
+        drawImage: vi.fn(),
+        getImageData: vi.fn(() => ({ data: new Uint8ClampedArray(4) }))
+      }) as unknown as CanvasRenderingContext2D
   ) as never
   HTMLCanvasElement.prototype.toDataURL = vi.fn(() => 'data:image/png;base64,psd-render') as never
 })
@@ -207,7 +228,8 @@ async function mountWorkbenchPanel(): Promise<string> {
         ProjectFooter: {
           name: 'ProjectFooter',
           props: ['progress', 'mode'],
-          template: '<div class="flex h-6 w-full items-center text-xs text-text-secondary">翻译进度 4/28</div>'
+          template:
+            '<div class="flex h-6 w-full items-center text-xs text-text-secondary">翻译进度 4/28</div>'
         },
         ProjectFormModal: { name: 'ProjectFormModal', template: '<div></div>' },
         // 真 ImageViewer 会在 jsdom 里建 ResizeObserver（这里没有）→ 用纯色块替身。
@@ -239,19 +261,67 @@ async function mountWorkbenchPanel(): Promise<string> {
 describe('visual: 看图三件套（缩略图条 / 播放 / 缩放）', () => {
   it('预览状态、对照状态、胶片条本体、真实页脚 —— 四块面板', async () => {
     const strip = await stripHtml()
-    // 预览状态：真机就是这样 —— 胶片条盖在画面底部，缩放控件往上让位。
+    // 预览状态：真机就是这样 —— 胶片条盖在画面底部（缩放控件已在页头，不需要让位了）。
     const previewHtml = panelBox(
       (await compareHtmlOf({ imageOnly: true, thumbStripOpen: true })) + strip
     )
-    const comparePanelHtml = panelBox(await compareHtmlOf({ imageOnly: false, thumbStripOpen: false }))
+    const comparePanelHtml = panelBox(
+      await compareHtmlOf({ imageOnly: false, thumbStripOpen: false })
+    )
 
     await shoot({
       name: 'viewer-controls',
+      // 视口必须自己给：shoot() 的面板是一行 flex-wrap，不给就排成一条 5000px 的长图。
+      viewport: { width: 2100, height: 1800 },
+      scale: 1,
       panels: [
-        { label: '预览状态（右下角缩放控件 + 底部胶片条）', html: previewHtml, width: 980, height: '560px' },
-        { label: '对照状态（同一组控件压在右下角）', html: comparePanelHtml, width: 980, height: '560px' },
-        { label: '胶片条本体（一半有图、一半页码占位）', html: panelBox(strip, 'h-[72px]'), width: 980, height: '120px' },
-        { label: '真实工作台：页脚两个按钮 + 展开的胶片条', html: panelBox(await mountWorkbenchPanel()), width: 1160, height: '560px' }
+        {
+          label: '预览状态（【原图】那一行：左边缩放、右边页码 8/14 ▾ + 底部胶片条）',
+          html: previewHtml,
+          width: 980,
+          height: '560px'
+        },
+        {
+          label: '对照状态（缩放与页码都在【原图】那一行；两栏共用一个倍数）',
+          html: comparePanelHtml,
+          width: 980,
+          height: '560px'
+        },
+        {
+          label: '切页按钮：鼠标移进看图区才淡入（P1.1，左右中段各一枚）',
+          html: panelBox(
+            await compareHtmlOf({ imageOnly: false, thumbStripOpen: false, revealPagers: true })
+          ),
+          width: 980,
+          height: '560px'
+        },
+        {
+          /**
+           * ⚠️ 2026-10-07：**嵌 / 监态**的切页按钮摆位 —— 上一页在原图栏左缘、
+           * 下一页在 **PSD 栏画面容器的右缘**（用户拍板："在 PSD 栏右边新增一个显隐区"）。
+           * 两个显隐区都点亮，好一眼看出"两枚分别在哪儿"。
+           */
+          label:
+            '嵌 / 监态：上一页在原图左缘 · 下一页在 **PSD 画面右缘**（两个显隐区各自独立，2026-10-07）',
+          html: panelBox(
+            await compareHtmlOf({ imageOnly: false, thumbStripOpen: false, revealPagers: true }),
+            'h-[420px]'
+          ),
+          width: 980,
+          height: '420px'
+        },
+        {
+          label: '胶片条本体（一半有图、一半页码占位）',
+          html: panelBox(strip, 'h-[72px]'),
+          width: 980,
+          height: '120px'
+        },
+        {
+          label: '真实工作台：页脚两个按钮 + 展开的胶片条',
+          html: panelBox(await mountWorkbenchPanel()),
+          width: 1160,
+          height: '560px'
+        }
       ]
     })
   })

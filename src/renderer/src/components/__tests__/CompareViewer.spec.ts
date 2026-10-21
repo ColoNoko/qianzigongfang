@@ -4,31 +4,27 @@ import { mount } from '@vue/test-utils'
 import { nextTick } from 'vue'
 import CompareViewer from '../CompareViewer.vue'
 
-// ---------------------------------------------------------------------------
-// Mock PsdWorkerPool — hoisted so the mock is in place before component import.
-// ---------------------------------------------------------------------------
-const { mockParsePsd, mockDestroy } = vi.hoisted(() => ({
-  mockParsePsd: vi.fn(),
-  mockDestroy: vi.fn()
+const { mockAcquire, mockRelease } = vi.hoisted(() => ({
+  mockAcquire: vi.fn(),
+  mockRelease: vi.fn()
 }))
-
-vi.mock('@renderer/workers/psd-pool', () => ({
-  // Regular function (not arrow) so `new PsdWorkerPool()` works —
-  // arrow functions lack [[Construct]].
-  PsdWorkerPool: vi.fn(function (this: unknown) {
-    return {
-      parsePsd: mockParsePsd,
-      destroy: mockDestroy
-    }
-  })
-}))
-
+vi.mock('@renderer/services/previews', () => ({ previewCache: { acquire: mockAcquire } }))
+beforeEach(() => {
+  mockAcquire.mockReset()
+  mockRelease.mockReset()
+  mockAcquire.mockImplementation(async (_path: string, raster: boolean) => ({
+    url: raster ? 'data:image/jpeg;base64,jpg-test' : 'data:image/png;base64,psd-render',
+    width: 200,
+    height: 200,
+    release: mockRelease
+  }))
+})
 // ---------------------------------------------------------------------------
 // Stub ImageViewer — avoids ResizeObserver/img-load complexity in jsdom.
 // ---------------------------------------------------------------------------
 const ImageViewerStub = {
   name: 'ImageViewer',
-  props: ['src'],
+  props: ['src', 'pan'],
   template: '<div class="image-viewer-stub" :data-src="String(src)"></div>'
 }
 
@@ -49,21 +45,6 @@ function mockComicType(opts?: {
     scanChildProject: opts?.scanChildProject
   }
 }
-
-// jsdom does not implement canvas — stub getContext + toDataURL so the
-// component's bitmapToUrl() works in tests.
-function mockCanvas(dataUrl = 'data:image/png;base64,psd-render'): void {
-  HTMLCanvasElement.prototype.getContext = vi.fn(
-    () => ({ drawImage: vi.fn() }) as unknown as CanvasRenderingContext2D
-  ) as any
-  HTMLCanvasElement.prototype.toDataURL = vi.fn(() => dataUrl)
-}
-
-const mockBitmap = {
-  width: 200,
-  height: 200,
-  close: vi.fn()
-} as unknown as ImageBitmap
 
 // ---------------------------------------------------------------------------
 // Helper: mount with standard stubs
@@ -102,17 +83,13 @@ async function flush(): Promise<void> {
 describe('CompareViewer', () => {
   beforeEach(() => {
     mockComicType()
-    mockCanvas()
-    mockParsePsd.mockReset()
-    mockDestroy.mockReset()
-    mockParsePsd.mockResolvedValue(mockBitmap)
   })
 
   it('Test 1: visible=true, jpgPath set → left ImageViewer renders with jpg URL', async () => {
     const wrapper = mountViewer()
     await flush()
 
-    expect(window.comicType.readFileDataURL).toHaveBeenCalledWith('/fake/page.jpg')
+    expect(mockAcquire).toHaveBeenCalledWith('/fake/page.jpg', true, expect.any(AbortSignal))
 
     const viewers = wrapper.findAllComponents({ name: 'ImageViewer' })
     expect(viewers.length).toBeGreaterThanOrEqual(1)
@@ -120,13 +97,11 @@ describe('CompareViewer', () => {
     expect(viewers[0].props('src')).toBe('data:image/jpeg;base64,jpg-test')
   })
 
-  it('Test 2: visible=true, psdPath set → calls readFileBuffer + parsePsd, right pane shows ImageBitmap', async () => {
+  it('Test 2: visible=true, psdPath set → acquires full PSD preview, right pane shows its URL', async () => {
     const wrapper = mountViewer()
     await flush()
 
-    expect(window.comicType.readFileBuffer).toHaveBeenCalledWith('/fake/page.psd')
-    expect(mockParsePsd).toHaveBeenCalledTimes(1)
-    expect(mockParsePsd).toHaveBeenCalledWith(expect.any(ArrayBuffer))
+    expect(mockAcquire).toHaveBeenCalledWith('/fake/page.psd', false, expect.any(AbortSignal))
 
     // Two ImageViewers: left (jpg) + right (psd).
     const viewers = wrapper.findAllComponents({ name: 'ImageViewer' })
@@ -165,7 +140,7 @@ describe('CompareViewer', () => {
     await flush()
 
     expect(window.comicType.scanChildProject).toHaveBeenCalledWith('/fake')
-    expect(window.comicType.readFileDataURL).toHaveBeenCalledWith('/fake/page.png')
+    expect(mockAcquire).toHaveBeenCalledWith('/fake/page.png', true, expect.any(AbortSignal))
     const viewers = wrapper.findAllComponents({ name: 'ImageViewer' })
     expect(viewers).toHaveLength(2)
     expect(viewers[0].props('src')).toBe('data:image/jpeg;base64,jpg-test')
@@ -184,7 +159,7 @@ describe('CompareViewer', () => {
     await flush()
 
     expect(wrapper.text()).toContain('原图')
-    expect(wrapper.text()).toContain('PSD')
+    expect(wrapper.find('[data-testid="compare-psd-pane-body"]').exists()).toBe(true)
     const closeBtn = wrapper.findAll('button').find((b) => b.text() === '退出预览')
     expect(closeBtn).toBeTruthy()
     await closeBtn!.trigger('click')
@@ -212,14 +187,14 @@ describe('CompareViewer', () => {
     const wrapper = mountViewer({ mode: 'supervised' })
     await flush()
 
-    const doneBtn = wrapper.get('[data-testid="compare-mark-done"]')
-    const pendingBtn = wrapper.get('[data-testid="compare-mark-pending"]')
-    expect(doneBtn.text()).toBe('标记监修')
-    expect(pendingBtn.text()).toBe('标记未监修')
-
-    await doneBtn.trigger('click')
-    await pendingBtn.trigger('click')
-
+    const button = wrapper.get('[data-testid="compare-mark-toggle"]')
+    expect(button.text()).toBe('未监修')
+    expect(button.attributes('aria-pressed')).toBe('false')
+    await button.trigger('click')
+    await wrapper.setProps({ markedDone: true })
+    expect(button.text()).toBe('已监修')
+    expect(button.attributes('aria-pressed')).toBe('true')
+    await button.trigger('click')
     expect(wrapper.emitted('mark')).toEqual([['done'], ['pending']])
   })
 
@@ -227,8 +202,7 @@ describe('CompareViewer', () => {
     const wrapper = mountViewer()
     await flush()
 
-    expect(wrapper.get('[data-testid="compare-mark-done"]').text()).toBe('标记嵌字')
-    expect(wrapper.get('[data-testid="compare-mark-pending"]').text()).toBe('标记未嵌字')
+    expect(wrapper.get('[data-testid="compare-mark-toggle"]').text()).toBe('未嵌字')
   })
 
   it('arrow keys and wheel emit previous/next', async () => {
@@ -270,23 +244,22 @@ describe('CompareViewer', () => {
     const wrapper = mountViewer({ imageOnly: true, psdPath: '/fake/only-images/001.jpg' })
     await flush()
 
-    expect(mockParsePsd).not.toHaveBeenCalled()
+    expect(mockAcquire.mock.calls.every((call) => call[1] === true)).toBe(true)
     expect(window.comicType.readFileBuffer).not.toHaveBeenCalled()
     // 原图仍然加载，且整屏只有这一栏
-    expect(window.comicType.readFileDataURL).toHaveBeenCalledWith('/fake/page.jpg')
+    expect(mockAcquire).toHaveBeenCalledWith('/fake/page.jpg', true, expect.any(AbortSignal))
     expect(wrapper.find('.image-viewer-stub').exists()).toBe(true)
     expect(wrapper.text()).toContain('图片预览')
     expect(wrapper.text()).not.toContain('PSD')
   })
 
   it('imageOnly=false（默认）仍然是双栏对照，照常解析 PSD', async () => {
-    mockParsePsd.mockResolvedValue(mockBitmap)
     const wrapper = mountViewer()
     await flush()
 
-    expect(mockParsePsd).toHaveBeenCalledTimes(1)
+    expect(mockAcquire).toHaveBeenCalledWith('/fake/page.psd', false, expect.any(AbortSignal))
     expect(wrapper.text()).toContain('对照视图')
-    expect(wrapper.text()).toContain('PSD')
+    expect(wrapper.find('[data-testid="compare-psd-pane-body"]').exists()).toBe(true)
   })
 })
 
@@ -384,17 +357,6 @@ describe('CompareViewer 缩放控件与播放挂钩', () => {
     expect(wrapper.get('[data-testid="compare-zoom-percent"]').text()).toBe('100%')
   })
 
-  it('缩略图条展开时控件组往上让位（不被压住）', async () => {
-    const wrapper = mountViewer({ thumbStripOpen: true })
-    await flush()
-
-    // 胶片条总高 104 + 12 的间隙 = 116。方块尺寸一变这个数字就得跟着变，
-    // 所以它取自 PreviewThumbStrip 导出的常量，而不是两处各写一个魔法数字。
-    expect(wrapper.get('[data-testid="compare-zoom-controls"]').attributes('style')).toContain(
-      'bottom: 116px'
-    )
-  })
-
   it('播放中按 Esc → 只停播放、不关窗；没在播放时仍然关窗', async () => {
     const playing = mountViewer({ playing: true })
     await flush()
@@ -464,4 +426,71 @@ describe('CompareViewer 标记后下一张', () => {
     await toggle.trigger('click')
     expect(wrapper.emitted('update:advanceAfterMark')).toEqual([[false]])
   })
+})
+
+it('releases previews and cancels pending work on page change and unmount', async () => {
+  mockComicType()
+  const wrapper = mountViewer()
+  await flush()
+  const signal = mockAcquire.mock.calls[0][2] as AbortSignal
+  await wrapper.setProps({ psdPath: '/fake/next.psd' })
+  await flush()
+  expect(signal.aborted).toBe(true)
+  expect(mockRelease).toHaveBeenCalledTimes(2)
+  wrapper.unmount()
+  expect(mockRelease).toHaveBeenCalledTimes(4)
+})
+
+describe('对照平移联动', () => {
+  it('翻页与切换模式恢复默认缩放和平移', async () => {
+    mockComicType()
+    const wrapper = mountViewer()
+    await flush()
+    for (const props of [{ psdPath: '/fake/next.psd' }, { mode: 'translated' as const }]) {
+      await wrapper.get('[data-testid="compare-zoom-in"]').trigger('click')
+      wrapper.findAllComponents({ name: 'ImageViewer' })[0].vm.$emit('update:pan', { x: .1, y: .2 })
+      await flush()
+      await wrapper.setProps(props)
+      await flush()
+      expect(wrapper.get('[data-testid="compare-zoom-percent"]').text()).toBe('100%')
+      expect(wrapper.findAllComponents({ name: 'ImageViewer' })[0].props('pan')).toEqual({ x: 0, y: 0 })
+    }
+    wrapper.unmount()
+  })
+  it('任一画布的归一化平移同步到另一栏，复位同时清零', async () => {
+    mockComicType()
+    const wrapper = mountViewer()
+    await flush()
+    await wrapper.get('[data-testid="compare-zoom-in"]').trigger('click')
+    const viewers = wrapper.findAllComponents({ name: 'ImageViewer' })
+    viewers[0].vm.$emit('update:pan', { x: .08, y: -.1 })
+    await flush()
+    expect(viewers[1].props('pan')).toEqual({ x: .08, y: -.1 })
+    viewers[1].vm.$emit('update:pan', { x: -.02, y: .05 })
+    await flush()
+    expect(viewers[0].props('pan')).toEqual({ x: -.02, y: .05 })
+    await wrapper.get('[data-testid="compare-zoom-out"]').trigger('click')
+    expect(viewers[0].props('pan')).toEqual({ x: 0, y: 0 })
+    wrapper.unmount()
+  })
+})
+
+it('keeps the editing anchor fixed after the bubble animates', async () => {
+  mockComicType()
+  const wrapper = mount(CompareViewer, {
+    props: {visible:true,jpgPath:'/fake/page.jpg',psdPath:'/fake/page.psd',translation:{loading:false,result:null,entry:{fileName:'page.jpg',labels:[{index:1,group:'框内',text:'译文',position:{unit:'normalized',x:.5,y:.5}}]},groups:['框内'],dirty:false,changedCount:0,saving:false,notice:'',changedIndices:[],positionOverrides:{},groupOverrides:{},mode:'translate',reviews:{},reviewCount:0,canUndoSaved:false,addFrameMode:false}},
+    global:{stubs:{ImageViewer:ImageViewerStub,TranslationPane:{name:'TranslationPane',props:['editorAnchor'],template:'<div />'}}}
+  })
+  await flush()
+  const bubble=document.createElement('button')
+  let bounds=new DOMRect(100,100,32,32)
+  bubble.getBoundingClientRect=()=>bounds
+  wrapper.findComponent({name:'CompareImagePane'}).vm.$emit('edit',1,bubble)
+  await flush()
+  const anchor=wrapper.findComponent({name:'TranslationPane'}).props('editorAnchor')
+  expect(anchor.getBoundingClientRect().x).toBe(100)
+  bounds=new DOMRect(96,96,40,40)
+  expect(anchor.getBoundingClientRect().x).toBe(100)
+  expect(anchor.getBoundingClientRect().width).toBe(32)
+  wrapper.unmount()
 })

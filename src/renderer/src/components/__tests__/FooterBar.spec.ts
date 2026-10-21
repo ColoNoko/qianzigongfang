@@ -23,14 +23,13 @@ describe('FooterBar', () => {
     expect(wrapper.text()).toBe('嵌字进度 0/4')
   })
 
-  it('sets the completion-coloured fill width to pct% when pct > 0', () => {
+  it('sets the theme-coloured fill width to pct% when pct > 0', () => {
     const progress: ChapterProgress = { done: 3, total: 7, pct: 42.86 }
     const wrapper = mount(FooterBar, { props: { progress } })
-    // 填充色从主色改成完成色 --done：主色要留给"可点击"，而"做完了"需要和它
-    // 在色相上分开。（文字已移出条外，所以填充色不再受可读性约束。）
-    const fill = wrapper.find('.bg-done')
+    // 文字位于轨道外，填充使用 Progress 组件的主题主色。
+    const fill = wrapper.find('[role="progressbar"]')
     expect(fill.exists()).toBe(true)
-    expect(fill.attributes('style')).toContain('width: 42.86%')
+    expect(fill.attributes('aria-valuenow')).toBe('42.86')
   })
 
   it('renders as a parent-contained bar rather than a global fixed footer', () => {

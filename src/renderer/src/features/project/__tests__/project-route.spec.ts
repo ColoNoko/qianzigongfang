@@ -38,11 +38,17 @@ describe('childWorkbenchPath', () => {
 })
 
 describe('resolveStartupPath', () => {
+  it('uses home by default and honors an explicit home preference despite history', () => {
+    for (const startupPage of [undefined, 'home'] as const) {
+      expect(resolveStartupPath({ startupPage, routeName: 'dashboard', recentChildIds: ['c1'], parents: parents() })).toBe('/')
+    }
+  })
+
   it('leaves an explicit entry point alone', () => {
     // A deep link, or the standalone LabelPlus preview window.
     for (const routeName of ['project', 'projectIndex', 'labelplusPreview', 'settings']) {
       expect(
-        resolveStartupPath({ routeName, recentChildIds: ['c1'], parents: parents() })
+        resolveStartupPath({ startupPage: 'project', routeName, recentChildIds: ['c1'], parents: parents() })
       ).toBeNull()
     }
   })
@@ -50,19 +56,19 @@ describe('resolveStartupPath', () => {
   it('leaves the window alone while the initial navigation is unresolved', () => {
     // Callers must await router.isReady() first; this pins that requirement.
     expect(
-      resolveStartupPath({ routeName: undefined, recentChildIds: ['c1'], parents: parents() })
+      resolveStartupPath({ startupPage: 'project', routeName: undefined, recentChildIds: ['c1'], parents: parents() })
     ).toBeNull()
   })
 
   it('opens the chapter the user last worked on', () => {
     expect(
-      resolveStartupPath({ routeName: 'dashboard', recentChildIds: ['c3'], parents: parents() })
+      resolveStartupPath({ startupPage: 'project', routeName: 'dashboard', recentChildIds: ['c3'], parents: parents() })
     ).toBe(childWorkbenchPath('ワンピース', 'c3'))
   })
 
   it('skips remembered chapters that no longer exist', () => {
     expect(
-      resolveStartupPath({
+      resolveStartupPath({ startupPage: 'project',
         routeName: 'dashboard',
         recentChildIds: ['deleted', 'c1'],
         parents: parents()
@@ -72,7 +78,7 @@ describe('resolveStartupPath', () => {
 
   it('falls back to the picker when every remembered chapter is gone', () => {
     expect(
-      resolveStartupPath({ routeName: 'dashboard', recentChildIds: ['gone'], parents: parents() })
+      resolveStartupPath({ startupPage: 'project', routeName: 'dashboard', recentChildIds: ['gone'], parents: parents() })
     ).toBe(PROJECT_LIST_PATH)
   })
 
@@ -81,19 +87,19 @@ describe('resolveStartupPath', () => {
       { id: 'p1', title: 'ドラゴンボール', lastMtimeMs: 0, children: [chapter('c1', 'ドラゴンボール')] }
     ]
     expect(
-      resolveStartupPath({ routeName: 'dashboard', recentChildIds: [], parents: single })
+      resolveStartupPath({ startupPage: 'project', routeName: 'dashboard', recentChildIds: [], parents: single })
     ).toBe(childWorkbenchPath('ドラゴンボール', 'c1'))
   })
 
   it('opens the picker with no history and more than one chapter', () => {
     expect(
-      resolveStartupPath({ routeName: 'dashboard', recentChildIds: [], parents: parents() })
+      resolveStartupPath({ startupPage: 'project', routeName: 'dashboard', recentChildIds: [], parents: parents() })
     ).toBe(PROJECT_LIST_PATH)
   })
 
   it('opens the picker (empty state) when there are no projects at all', () => {
     expect(
-      resolveStartupPath({ routeName: 'dashboard', recentChildIds: [], parents: [] })
+      resolveStartupPath({ startupPage: 'project', routeName: 'dashboard', recentChildIds: [], parents: [] })
     ).toBe(PROJECT_LIST_PATH)
   })
 

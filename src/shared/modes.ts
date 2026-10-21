@@ -50,6 +50,17 @@ export function normalizeModeStatus(value: unknown): WorkModeStatus {
   return result
 }
 
+/** Read persisted legacy records without treating absent mode fields as explicit false. */
+export function storedModeStatus(json: string | null | undefined, legacyStatus?: string): WorkModeStatus {
+  let value: unknown
+  try { value = json ? JSON.parse(json) : undefined } catch { /* Recover the known legacy flag. */ }
+  const modes = normalizeModeStatus(value)
+  if (!value || typeof value !== 'object' || Array.isArray(value) || typeof (value as Record<string, unknown>).typeset !== 'boolean') {
+    modes.typeset = legacyStatus === 'done'
+  }
+  return modes
+}
+
 /** 旧逻辑里 status 只表达“嵌字”。这里把多模式状态映射回旧字段。 */
 export function modeStatusToLegacyStatus(modes: Partial<WorkModeStatus>): 'done' | 'pending' {
   return modes.typeset ? 'done' : 'pending'

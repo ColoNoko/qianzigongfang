@@ -9,7 +9,7 @@ import { defineStore } from 'pinia'
  * can cancel a pending auto-dismiss (preventing a double-remove race).
  */
 
-export type ToastType = 'success' | 'warning' | 'error'
+export type ToastType = 'success' | 'warning' | 'error' | 'loading'
 
 export interface ToastItem {
   id: string
@@ -33,6 +33,10 @@ export const useToastStore = defineStore('toast', {
   }),
 
   actions: {
+    updateToast(id: string, message: string): void {
+      const index = this.toasts.findIndex((item) => item.id === id)
+      if (index !== -1) this.toasts[index] = { ...this.toasts[index], message }
+    },
     /**
      * Push a toast and schedule auto-removal after `duration` ms.
      * If `duration` is 0 the toast persists until manually dismissed.

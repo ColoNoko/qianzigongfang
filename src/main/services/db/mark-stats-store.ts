@@ -1,6 +1,7 @@
-import { getDatabase } from './connection'
-import { createEmptyModeStatus, normalizeModeStatus, normalizeModeTimestamps } from '@shared/modes'
-import type { WorkMode } from '@shared/types'
+import { DatabaseSync } from 'node:sqlite';
+import { getDatabase } from './connection';
+import { storedModeStatus, normalizeModeTimestamps } from '@shared/modes';
+import type { WorkMode } from '@shared/types';
 
 /**
  * 标记统计层（成就 / 首页的数据源）—— 2026-10-02 P4 第四刀从 `services/database.ts`
@@ -25,14 +26,36 @@ import type { WorkMode } from '@shared/types'
  * 时间戳缺失的老记录回退到该行的 `updated_at`（"这行标记最后一次写入的时间"）：
  * 宁可粗一点，也不要让历史凭空少一截。
  */
-export async function collectChildMarkStatistics(): Promise<
-  import('@shared/ipc-api').ChildMarkStatistics[]
-> {
-  const database = await getDatabase()
+/**
+ * 从**任意一份**库文件里按话汇总标记记录。
+ *
+ * 抽出来是为了"导入别人的数据库"那条路（2026-10-05）：对方不必升级到同一版本，
+ * 把 `data\database\qianzi-gongfang.sqlite` 拷过来就能比 —— 我们只读地开他的库、
+ * 跑**同一段**汇总查询，绝不碰他的项目树，也绝不写回。
+ */
+export function collectMarkStatisticsFrom(
+  database: DatabaseSync
+): import('@shared/ipc-api').ChildMarkStatistics[] {
+  const hasDates = !!database
+    .prepare("SELECT name FROM sqlite_master WHERE name = 'statistics_time_pages'")
+    .get();
+  const dateRows = hasDates
+    ? (database.prepare('SELECT * FROM statistics_time_pages').all() as unknown as {
+        child_id: string;
+        path_key: string;
+        mode: string;
+        at: number;
+        source: string;
+        mark_at: number;
+      }[])
+    : [];
+  const dates = new Map(
+    dateRows.map((row) => [JSON.stringify([row.child_id, row.path_key, row.mode]), row])
+  );
   const rows = database
     .prepare(
       `
-      SELECT f.child_id AS child_id,
+      SELECT f.child_id AS child_id, f.path_key AS path_key,
              p.folder_path AS folder_path,
              f.status AS status,
              f.updated_at AS updated_at,
@@ -44,64 +67,114 @@ export async function collectChildMarkStatistics(): Promise<
     `
     )
     .all() as Array<{
-    child_id: string
-    folder_path: string
-    status: string
-    updated_at: number
-    mode_statuses_json: string | null
-    mode_timestamps_json: string | null
-  }>
+    path_key: string;
+    child_id: string;
+    folder_path: string;
+    status: string;
+    updated_at: number;
+    mode_statuses_json: string | null;
+    mode_timestamps_json: string | null;
+  }>;
 
-  const allModes: WorkMode[] = ['typeset', 'translated', 'proofread', 'supervised']
-  const byChild = new Map<string, import('@shared/ipc-api').ChildMarkStatistics>()
+  const allModes: WorkMode[] = ['typeset', 'translated', 'proofread', 'supervised'];
+  const byChild = new Map<string, import('@shared/ipc-api').ChildMarkStatistics>();
 
   for (const row of rows) {
-    let stat = byChild.get(row.child_id)
+    let stat = byChild.get(row.child_id);
     if (!stat) {
       stat = {
         childId: row.child_id,
         folderPath: row.folder_path,
         fileCount: 0,
-        completedTimestamps: { typeset: [], translated: [], proofread: [], supervised: [] }
-      }
-      byChild.set(row.child_id, stat)
+        completedTimestamps: { typeset: [], translated: [], proofread: [], supervised: [] },
+        datedEntries: {},
+        lastOperationAtByMode: {}
+      };
+      byChild.set(row.child_id, stat);
     }
-    stat.fileCount++
+    stat.fileCount++;
 
-    let modes = createEmptyModeStatus()
-    if (row.mode_statuses_json) {
-      try {
-        modes = normalizeModeStatus(JSON.parse(row.mode_statuses_json))
-      } catch {
-        // 损坏的 JSON 回退为空状态（按下面的 legacy 规则推 typeset）。
-      }
-    } else {
-      modes.typeset = row.status === 'done'
-    }
+    const modes = storedModeStatus(row.mode_statuses_json, row.status);
 
-    let timestamps: Record<string, number> = {}
+    let timestamps: Record<string, number> = {};
     if (row.mode_timestamps_json) {
       try {
         timestamps = normalizeModeTimestamps(JSON.parse(row.mode_timestamps_json)) as Record<
           string,
           number
-        >
+        >;
       } catch {
         // 同上。
       }
     }
 
     for (const mode of allModes) {
-      if (!modes[mode]) continue
-      const recorded = timestamps[mode]
+      if (!modes[mode]) continue;
+      const assignment = dates.get(JSON.stringify([row.child_id, row.path_key, mode]));
+      const original = timestamps[mode] || row.updated_at;
+      stat.lastOperationAtByMode![mode] = Math.max(
+        stat.lastOperationAtByMode![mode] ?? 0,
+        original
+      );
+      const recorded =
+        assignment && (!timestamps[mode] || assignment.mark_at === original)
+          ? assignment.at
+          : original;
+      (stat.datedEntries![mode] ??= []).push({
+        at: recorded,
+        source:
+          assignment && (!timestamps[mode] || assignment.mark_at === original)
+            ? (assignment.source as import('@shared/statistics-time').StatisticsTimeSource)
+            : 'mark'
+      });
       stat.completedTimestamps[mode].push(
         typeof recorded === 'number' && recorded > 0 ? recorded : row.updated_at
-      )
+      );
     }
   }
 
-  for (const stat of byChild.values()) {
-    for (const mode of allModes) stat.completedTimestamps[mode].sort((a, b) => a - b)
+  if (database.prepare("SELECT name FROM sqlite_master WHERE name = 'mark_audit'").get()) {
+    const operations = database
+      .prepare(
+        "SELECT child_id, mode, MAX(at) AS at FROM mark_audit WHERE mode IS NOT NULL AND entries_json != '[]' AND source != 'statistics-time' GROUP BY child_id, mode"
+      )
+      .all() as { child_id: string; mode: WorkMode; at: number }[];
+    for (const operation of operations) {
+      const stat = byChild.get(operation.child_id);
+      if (stat && allModes.includes(operation.mode))
+        stat.lastOperationAtByMode![operation.mode] = Math.max(
+          stat.lastOperationAtByMode![operation.mode] ?? 0,
+          operation.at
+        );
+    }
   }
-  return [...byChild.values()]
+  if (database.prepare("SELECT name FROM sqlite_master WHERE name = 'key_value_store'").get()) {
+    const projectRow = database
+      .prepare("SELECT value_json FROM key_value_store WHERE key = 'projects'")
+      .get() as { value_json: string } | undefined;
+    if (projectRow) {
+      try {
+        const parents = JSON.parse(
+          projectRow.value_json
+        ) as import('@shared/types').ParentProject[];
+        for (const child of parents.flatMap((p) => p.children)) {
+          const stat = byChild.get(child.id);
+          if (stat) stat.fileCount = Math.max(stat.fileCount, child.psdStats?.length ?? 0);
+        }
+      } catch {
+        /* Existing records remain available even if the tree is damaged. */
+      }
+    }
+  }
+  for (const stat of byChild.values()) {
+    for (const mode of allModes) stat.completedTimestamps[mode].sort((a, b) => a - b);
+  }
+  return [...byChild.values()];
+}
+
+/** 成就页 / 首页的取数入口：读**当前**这个库。 */
+export async function collectChildMarkStatistics(): Promise<
+  import('@shared/ipc-api').ChildMarkStatistics[]
+> {
+  return collectMarkStatisticsFrom(await getDatabase());
 }

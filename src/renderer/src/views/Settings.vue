@@ -1,8 +1,18 @@
 <script setup lang="ts">
+import { Slider } from '@renderer/components/ui/slider'
+import { ToggleGroup, ToggleGroupItem } from '@renderer/components/ui/toggle-group'
+import { Switch } from "@renderer/components/ui/switch"
+import { Button as UiButton } from '@renderer/components/ui/button'
+import UiInput from '@renderer/components/ui/ControlInput.vue'
+import { Card, CardHeader, CardTitle, CardDescription, CardContent } from '@renderer/components/ui/card'
+import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui/popover'
+import SettingRow from '@renderer/features/settings/SettingRow.vue'
+import SettingsToolRow from '@renderer/features/settings/SettingsToolRow.vue'
+import { WORK_MODE_OPTIONS } from '@shared/modes'
 // Settings — global appearance, thumbnail size, sorting and data migration.
 import { computed, onMounted, ref } from 'vue'
 import { storeToRefs } from 'pinia'
-import { useSettingsStore, PLAY_INTERVAL_OPTIONS } from '@renderer/stores/settings'
+import { useSettingsStore } from '@renderer/stores/settings'
 import { useThemeStore } from '@renderer/stores/theme'
 import { useToastStore } from '@renderer/stores/toast'
 import { useProjectWorkspace } from '@renderer/stores/projectWorkspace'
@@ -15,7 +25,6 @@ import { derivePhotoshopPath } from '@renderer/features/project/card-action'
 import MarkHistoryDialog from '@renderer/features/project/MarkHistoryDialog.vue'
 import RestoreMarksDialog from '@renderer/features/project/RestoreMarksDialog.vue'
 import DiagnosticsDialog from '@renderer/features/project/DiagnosticsDialog.vue'
-import DbBackupList from '@renderer/features/settings/DbBackupList.vue'
 import BackupManagerDialog from '@renderer/features/settings/BackupManagerDialog.vue'
 import type { DbBackupInfo, MarkWriteBackResult } from '@shared/ipc-api'
 import type { UpdateManifest } from '@shared/update'
@@ -26,7 +35,6 @@ const APP_NAME = '汉化工坊'
  * ⚠️ 这里**不许**再写版本号字面量 —— 以前写死在这儿，改版本时最容易漏的就是它。
  */
 const APP_VERSION = __APP_VERSION__
-const APP_DESCRIPTION = '嵌字 / 翻译 / 校对 / 监修 —— 一条线走完'
 
 const thumbSizes: readonly ThumbSize[] = ['大', '中', '小'] as const
 const childSortOrders: ReadonlyArray<{ value: ChildSortOrder; label: string }> = [
@@ -60,12 +68,30 @@ const {
   photoshopPath,
   typesetImportScript,
   skipPsFallbackPrompt,
-  playIntervalMs,
   autoBackup
 } = storeToRefs(settingsStore)
 const { theme: selectedTheme, hue, saturation, neutralSaturation } = storeToRefs(themeStore)
 const importingLegacyData = ref(false)
-const activeHueColor = computed(() => `hsl(${hue.value} ${saturation.value}% 50%)`)
+const personalName = ref('')
+const nameLoading = ref(true)
+const nameSaving = ref(false)
+onMounted(async () => {
+  try { const value = await window.comicType.storeGet('ui.userId'); personalName.value = typeof value === 'string' ? value.slice(0,40) : '' }
+  catch { toast.addToast({type:'error',message:'个人称呼读取失败'}) }
+  finally { nameLoading.value = false }
+})
+async function savePersonalName() {
+  if (nameSaving.value || nameLoading.value) return
+  nameSaving.value = true
+  try {
+    const value = personalName.value.trim().slice(0,40)
+    await window.comicType.storeSet('ui.userId',value)
+    personalName.value = value
+    toast.addToast({type:'success',message:'个人称呼已保存'})
+  } catch { toast.addToast({type:'error',message:'个人称呼保存失败，请重试'}) }
+  finally { nameSaving.value = false }
+}
+
 
 onMounted(() => {
   void settingsStore.loadSettings()
@@ -79,18 +105,9 @@ function onChildSortOrderChange(order: ChildSortOrder): void {
   settingsStore.setChildSortOrder(order)
 }
 
-function onPlayIntervalChange(ms: number): void {
-  settingsStore.setPlayIntervalMs(ms)
-}
-
 // --- 数据安全：备份 / 还原 / 标记记录（第十四轮）--------------------------------
-/**
- * 设置页只摆**最新几条**备份（第二十三轮）—— 保留策略是主进程的 `KEEP_BACKUPS = 20`，
- * 全摆出来迟早是 20 行（约 880px），会把设置页长期撑长。其余进「备份管理」弹窗。
- */
-const CARD_BACKUP_PREVIEW = 3
+// 设置页显示最近备份时间，完整列表在备份管理中查看。
 const backups = ref<DbBackupInfo[]>([])
-const visibleBackups = computed(() => backups.value.slice(0, CARD_BACKUP_PREVIEW))
 const backupManagerVisible = ref(false)
 const backingUp = ref(false)
 const backupMessage = ref('')
@@ -184,10 +201,6 @@ async function onRevealBackups(): Promise<void> {
   }
 }
 
-function onAutoBackupChange(event: Event): void {
-  settingsStore.setAutoBackup((event.target as HTMLInputElement).checked)
-}
-
 function openRestore(backup: DbBackupInfo): void {
   restoreTarget.value = backup
   restoreOpen.value = true
@@ -208,8 +221,8 @@ onMounted(() => {
   void refreshBackups()
 })
 
-function onSilentSelfCheckChange(event: Event): void {
-  settingsStore.setSilentSelfCheck((event.target as HTMLInputElement).checked)
+function onSilentSelfCheckChange(checked: boolean): void {
+  settingsStore.setSilentSelfCheck(checked)
 }
 
 /** The three configurable external tools, rendered from one description. */
@@ -220,30 +233,6 @@ const TOOL_FIELD_APPLY: Record<ToolField, (path: string) => void> = {
   photoshop: (path) => settingsStore.setPhotoshopPath(path),
   importScript: (path) => settingsStore.setTypesetImportScript(path)
 }
-
-const toolFields = computed(() => [
-  {
-    key: 'translation' as ToolField,
-    label: '翻译 / 校对工具',
-    hint: '翻译、校对模式下「去翻译」所启动的程序（例如 LabelPlusFX.exe）。',
-    placeholder: '例如 D:\\…\\LabelPlusFX\\LabelPlusFX.exe',
-    value: labelPlusFxPath.value
-  },
-  {
-    key: 'photoshop' as ToolField,
-    label: 'Photoshop 程序',
-    hint: '监修模式（该话没有 PSD 时）与译文导入流程使用；选中 .jsx 后若此处为空，会尝试自动推导。',
-    placeholder: '例如 E:\\…\\Adobe Photoshop 2026\\Photoshop.exe',
-    value: photoshopPath.value
-  },
-  {
-    key: 'importScript' as ToolField,
-    label: '译文导入 / PSD 生成工具（.jsx）',
-    hint: '嵌字模式遇到没有 PSD 的话数时，在 Photoshop 里运行该脚本生成 PSD。',
-    placeholder: '例如 E:\\…\\Presets\\Scripts\\译文 .jsx',
-    value: typesetImportScript.value
-  }
-])
 
 /**
  * Picking the .jsx also pre-fills Photoshop, because the script lives at
@@ -265,23 +254,6 @@ async function onPickToolPath(field: ToolField): Promise<void> {
   } catch {
     // Derivation is a convenience only — a miss leaves the field for the user.
   }
-}
-
-function onClearToolPath(field: ToolField): void {
-  TOOL_FIELD_APPLY[field]('')
-}
-
-/** Manual edits go through the store so validation/normalisation stays in one place. */
-function onToolPathInput(field: ToolField, event: Event): void {
-  TOOL_FIELD_APPLY[field]((event.target as HTMLInputElement).value)
-}
-
-function onSkipPsFallbackChange(event: Event): void {
-  settingsStore.setSkipPsFallbackPrompt((event.target as HTMLInputElement).checked)
-}
-
-function rangeValue(event: Event): number {
-  return Number((event.target as HTMLInputElement).value)
 }
 
 function isPresetActive(preset: ThemeColorSettings): boolean {
@@ -330,642 +302,150 @@ async function importLegacyJson(): Promise<void> {
     importingLegacyData.value = false
   }
 }
+
+const colorOpen = ref(false)
+const draftColors = ref<ThemeColorSettings>({ hue: 262, saturation: 58, neutralSaturation: 8 })
+function openColors(open: boolean) {
+  colorOpen.value = open
+  if (open) draftColors.value = { hue: hue.value, saturation: saturation.value, neutralSaturation: neutralSaturation.value }
+}
+function saveColors() { themeStore.setColorSettings(draftColors.value); colorOpen.value = false }
+const selectedPreset = computed(() => colorPresets.find(isPresetActive)?.label ?? '')
+function choosePreset(value: unknown) {
+  const preset = colorPresets.find(p => p.label === value)
+  if (preset) themeStore.setColorSettings(preset)
+}
+function updateDuties(value: unknown) {
+  if (!Array.isArray(value)) return
+  const duties = WORK_MODE_OPTIONS.filter(item => value.includes(item.value)).map(item => item.value)
+  if (duties.length > 2) return
+  void settingsStore.saveImportDuties(duties)
+}
+const groups = [{id:'appearance',label:'外观与看图'},{id:'workflow',label:'项目习惯'},{id:'tools',label:'外部软件'},{id:'data',label:'数据与备份'}]
+function scrollToGroup(id: string) { document.getElementById('settings-' + id)?.scrollIntoView({ block:'start', behavior:'smooth' }) }
+const latestBackup = computed(() => backups.value[0] ? new Date(backups.value[0].at).toLocaleString('zh-CN') : '尚无备份')
 </script>
 
 <template>
-  <div class="page-in min-h-full bg-app-bg p-6 text-text-primary">
-    <h1 class="mb-6 text-xl font-semibold tracking-tight text-text-primary">设置</h1>
-
-    <div class="flex flex-col gap-7">
-      <!-- 分组一：界面与预览 —— 分组标题在组的最上面，下面是它包含的两块 -->
-      <div class="flex flex-col gap-3">
-        <h2 class="settings-group">界面与预览</h2>
-        <!-- 全局外观与色彩 + 三个一行的小设置 -->
-        <section
-          data-testid="settings-color-section"
-          class="rounded-lg border border-border bg-card-bg p-5 shadow-[var(--shadow-1)]"
-        >
-          <div class="flex items-start justify-between gap-4">
-            <div>
-              <h3 class="settings-title">全局外观与色彩</h3>
-              <p class="settings-desc">
-                基于根目录 index.html
-                的设计令牌统一生成主色、中性色和状态色，调整后立即应用到全部页面。
-              </p>
-            </div>
-            <button
-              type="button"
-              class="shrink-0 rounded-badge border border-border px-3 py-1.5 text-xs text-text-secondary transition-colors hover:border-accent hover:bg-card-bg-hover hover:text-text-primary"
-              data-testid="theme-colors-reset"
-              @click="themeStore.resetColorSettings()"
-            >
-              恢复默认
-            </button>
-          </div>
-
-          <div class="mt-5 grid gap-5 lg:grid-cols-[minmax(0,1fr)_minmax(240px,0.7fr)]">
-            <div class="space-y-5">
-              <div>
-                <span class="mb-2 block text-xs font-medium text-text-secondary">外观模式</span>
-                <div
-                  class="inline-flex overflow-hidden rounded-badge border border-border bg-app-bg"
-                >
-                  <button
-                    v-for="mode in themeModes"
-                    :key="mode.value"
-                    type="button"
-                    class="px-4 py-2 text-xs font-medium transition-colors"
-                    :class="
-                      selectedTheme === mode.value
-                        ? 'bg-accent text-text-on-accent'
-                        : 'text-text-secondary hover:bg-card-bg-hover hover:text-text-primary'
-                    "
-                    :data-testid="`theme-mode-${mode.value}`"
-                    @click="themeStore.setTheme(mode.value)"
-                  >
-                    {{ mode.label }}
-                  </button>
-                </div>
+  <div class="settings-shell page-layout bg-app-bg text-text-primary">
+    <div class="w-full">
+      <header class="view-heading">
+        <div><h1 class="view-title">设置</h1><p class="view-description">让工坊适合你的工作习惯。</p></div>
+        <span class="text-xs text-muted-foreground">偏好自动保存</span>
+      </header>
+      <nav aria-label="设置分组" class="mb-6 flex flex-wrap gap-1 border-b border-border pb-3">
+        <UiButton v-for="group in groups" :key="group.id" variant="ghost" size="sm" @click="scrollToGroup(group.id)">{{ group.label }}</UiButton>
+      </nav>
+      <div class="flex flex-col gap-6">
+        <Card id="settings-appearance" class="settings-card" data-settings-group="appearance" data-testid="settings-color-section">
+          <CardHeader class="pb-2"><CardTitle class="text-base">外观与看图</CardTitle><CardDescription>调整显示方式，让阅读和操作更顺手。</CardDescription></CardHeader>
+          <CardContent class="settings-rows">
+            <SettingRow title="启动页面" description="选择项目时，优先继续上次打开的章节；没有记录则显示项目列表。">
+              <ToggleGroup type="single" size="sm" :model-value="settingsStore.startupPage" aria-label="启动页面" :disabled="settingsStore.savingStartupPage" @update:model-value="value => { if(value === 'home' || value === 'project') settingsStore.setStartupPage(value) }"><ToggleGroupItem value="home">首页</ToggleGroupItem><ToggleGroupItem value="project">项目</ToggleGroupItem></ToggleGroup>
+            </SettingRow>
+            <SettingRow title="首页风格" description="选择首页的信息布局与展示风格。">
+              <ToggleGroup type="single" size="sm" :model-value="settingsStore.homeStyle" aria-label="首页风格" :disabled="settingsStore.savingHomeStyle" @update:model-value="value => { if(value === 'default' || value === 'modern') settingsStore.setHomeStyle(value) }"><ToggleGroupItem value="default">默认</ToggleGroupItem><ToggleGroupItem value="modern">现代</ToggleGroupItem></ToggleGroup>
+            </SettingRow>
+            <SettingRow title="个人称呼" description="用于现代首页的问候语，留空时称呼你为「朋友」。">
+              <UiInput v-model="personalName" class="w-48 max-w-full" aria-label="个人称呼" placeholder="朋友" :maxlength="40" :disabled="nameLoading || nameSaving" @keydown.enter="savePersonalName" />
+              <UiButton variant="outline" size="sm" :disabled="nameLoading || nameSaving" @click="savePersonalName">{{ nameSaving ? '保存中…' : '保存称呼' }}</UiButton>
+            </SettingRow>
+            <SettingRow title="明暗模式">
+              <ToggleGroup type="single" variant="outline" size="sm" :model-value="selectedTheme" aria-label="明暗模式" @update:model-value="$event && themeStore.setTheme($event as ThemeMode)">
+                <ToggleGroupItem v-for="mode in themeModes" :key="mode.value" :value="mode.value" :data-testid="`theme-mode-${mode.value}`">{{ mode.label }}</ToggleGroupItem>
+              </ToggleGroup>
+            </SettingRow>
+            <SettingRow title="主题配色">
+              <ToggleGroup type="single" size="sm" :model-value="selectedPreset" aria-label="主题配色" @update:model-value="choosePreset">
+                <ToggleGroupItem v-for="preset in colorPresets" :key="preset.label" :value="preset.label" :data-testid="`theme-preset-${preset.hue}`"><span class="mr-1.5 size-2.5 rounded-full" :style="{backgroundColor:`hsl(${preset.hue} ${preset.saturation}% 50%)`}" />{{ preset.label }}</ToggleGroupItem>
+              </ToggleGroup>
+              <Popover :open="colorOpen" @update:open="openColors">
+                <PopoverTrigger as-child><UiButton variant="ghost" size="sm">自定义…</UiButton></PopoverTrigger>
+                <PopoverContent align="end" class="w-80 max-w-[calc(100vw-2rem)]">
+                  <p class="text-sm font-semibold">自定义颜色</p><p class="mt-1 text-xs text-muted-foreground">保存后应用到整个工坊。</p>
+                  <div class="my-4 flex h-12 items-center justify-center rounded-md text-sm" :style="{backgroundColor:`hsl(${draftColors.hue} ${draftColors.saturation}% 92%)`,color:`hsl(${draftColors.hue} ${draftColors.saturation}% 28%)`}">配色预览</div>
+                  <label v-for="slider in [{key:'hue' as const,label:'色相',max:360},{key:'saturation' as const,label:'主色饱和度',max:100},{key:'neutralSaturation' as const,label:'背景染色',max:30}]" :key="slider.key" class="mb-3 block text-xs">
+                    <span class="mb-2 flex justify-between"><span>{{ slider.label }}</span><span>{{ draftColors[slider.key] }}</span></span>
+                    <UiInput type="range" :aria-label="slider.label" min="0" :max="slider.max" :value="draftColors[slider.key]" class="w-full" @input="draftColors[slider.key] = Number(($event.target as HTMLInputElement).value)" />
+                  </label>
+                  <div class="flex justify-end gap-2"><UiButton variant="ghost" size="sm" data-testid="theme-colors-reset" @click="draftColors = {hue:262,saturation:58,neutralSaturation:8}">默认值</UiButton><UiButton variant="outline" size="sm" @click="colorOpen = false">取消</UiButton><UiButton size="sm" @click="saveColors">保存</UiButton></div>
+                </PopoverContent>
+              </Popover>
+            </SettingRow>
+            <SettingRow title="缩略图大小" data-testid="settings-thumb-section">
+              <ToggleGroup type="single" size="sm" :model-value="selectedThumb" aria-label="全局缩略图大小" @update:model-value="value => { if (value === '大' || value === '中' || value === '小') onThumbChange(value) }"><ToggleGroupItem v-for="size in [...thumbSizes].reverse()" :key="size" :value="size">{{ size }}</ToggleGroupItem></ToggleGroup>
+            </SettingRow>
+            <SettingRow title="译文浮点标记大小" description="适用于翻译、校对和监修。100% 为原始大小。">
+              <div class="flex w-72 max-w-full items-center gap-4">
+                <div class="min-w-0 flex-1"><Slider :model-value="[settingsStore.anchorScale]" :min="30" :max="200" :step="1" aria-label="浮点标记大小" @update:model-value="value => settingsStore.setAnchorScale(value?.[0] ?? 100)" /><p class="mt-2 text-xs text-muted-foreground">{{ settingsStore.anchorScale }}% · 30%–200%</p></div>
+                <div class="flex h-24 w-24 shrink-0 items-center justify-center rounded-md border bg-muted" aria-label="标记大小预览"><span class="flex items-center justify-center rounded-full font-bold text-white" :style="{ width: `calc(32px * var(--translation-anchor-scale, 1))`, height: `calc(32px * var(--translation-anchor-scale, 1))`, fontSize: `calc(11px * var(--translation-anchor-scale, 1))`, background: 'var(--lp-group-1)' }">1</span></div>
               </div>
+            </SettingRow>
+            <SettingRow title="图片预览滚轮操作" :description="settingsStore.invertWheel ? '按住 Ctrl 时翻页。' : '按住 Ctrl 时缩放。'">
+              <ToggleGroup type="single" size="sm" :model-value="settingsStore.invertWheel ? 'zoom' : 'page'" aria-label="图片预览滚轮操作" @update:model-value="value => { if (value) settingsStore.setInvertWheel(value === 'zoom') }"><ToggleGroupItem value="page">翻页</ToggleGroupItem><ToggleGroupItem value="zoom">缩放</ToggleGroupItem></ToggleGroup>
+            </SettingRow>
+          </CardContent>
+        </Card>
+        <Card id="settings-workflow" class="settings-card" data-settings-group="workflow">
+          <CardHeader class="pb-2"><CardTitle class="text-base">项目习惯</CardTitle><CardDescription>决定新作品如何加入，以及打开时如何工作。</CardDescription></CardHeader>
+          <CardContent class="settings-rows">
+            <SettingRow title="新漫画默认职责" description="最多选择两个，仅影响之后添加的漫画。">
+              <ToggleGroup type="multiple" size="sm" :model-value="settingsStore.defaultImportDuties" aria-label="新漫画默认职责" @update:model-value="updateDuties"><ToggleGroupItem v-for="option in WORK_MODE_OPTIONS" :key="option.value" :value="option.value" :disabled="settingsStore.defaultImportDuties.length >= 2 && !settingsStore.defaultImportDuties.includes(option.value)">{{ option.label }}</ToggleGroupItem></ToggleGroup>
+            </SettingRow>
+            <SettingRow v-if="settingsStore.defaultImportDuties.length === 2" title="进入作品优先切换到" description="作品有两个职责时，自动选择对应工序。">
+              <ToggleGroup type="single" size="sm" :model-value="settingsStore.dutyModePriority" aria-label="双职责优先级" @update:model-value="value => { if (value === 'slower' || value === 'faster') settingsStore.saveImportDuties(settingsStore.defaultImportDuties, value) }"><ToggleGroupItem value="slower">进度较慢</ToggleGroupItem><ToggleGroupItem value="faster">进度较快</ToggleGroupItem></ToggleGroup>
+            </SettingRow>
+            <SettingRow title="章节排列" data-testid="settings-child-sort-section"><ToggleGroup type="single" size="sm" :model-value="childSortOrder" aria-label="集数排序" @update:model-value="value => { if (value) onChildSortOrderChange(value as ChildSortOrder) }"><ToggleGroupItem v-for="option in childSortOrders" :key="option.value" :value="option.value">{{ option.label }}</ToggleGroupItem></ToggleGroup></SettingRow>
+            <SettingRow title="发现新章节时" description="手动检测新章节时使用。同集数冲突仍需确认。" data-testid="settings-self-check-section"><ToggleGroup type="single" size="sm" :model-value="silentSelfCheck ? 'auto' : 'ask'" aria-label="发现新章节时" @update:model-value="value => { if (value) onSilentSelfCheckChange(value === 'auto') }"><ToggleGroupItem value="ask">先确认</ToggleGroupItem><ToggleGroupItem value="auto">直接加入</ToggleGroupItem></ToggleGroup></SettingRow>
+            
 
-              <div>
-                <span class="mb-2 block text-xs font-medium text-text-secondary">色彩预设</span>
-                <div class="flex flex-wrap gap-2">
-                  <button
-                    v-for="preset in colorPresets"
-                    :key="preset.label"
-                    type="button"
-                    class="flex items-center gap-2 rounded-badge border px-3 py-2 text-xs transition-colors hover:bg-card-bg-hover"
-                    :class="
-                      isPresetActive(preset)
-                        ? 'border-accent bg-selected-bg text-accent'
-                        : 'border-border text-text-secondary'
-                    "
-                    :data-testid="`theme-preset-${preset.hue}`"
-                    @click="themeStore.setColorSettings(preset)"
-                  >
-                    <span
-                      class="h-3.5 w-3.5 rounded-full border border-border"
-                      :style="{
-                        backgroundColor: `hsl(${preset.hue} ${preset.saturation}% 50%)`
-                      }"
-                      aria-hidden="true"
-                    />
-                    {{ preset.label }}
-                  </button>
-                </div>
-              </div>
+              <SettingRow title="后台检测漫画更新" description="每 10 分钟扫描已有章节与新章节。关闭后，当前打开的章节仍会实时更新。"><Switch :model-value="settingsStore.autoIncrementalScan" aria-label="后台检测漫画更新" data-testid="auto-incremental-scan" @update:model-value="settingsStore.setAutoIncrementalScan" /></SettingRow>
+            
+          </CardContent>
+        </Card>
+        <Card id="settings-tools" class="settings-card" data-settings-group="tools" data-testid="settings-tool-section">
+          <CardHeader class="pb-2"><CardTitle class="text-base">外部软件</CardTitle><CardDescription>按需配置；使用内置翻译编辑器，无需另选翻译软件。</CardDescription></CardHeader>
+          <CardContent class="settings-rows">
+            <SettingsToolRow title="Photoshop" description="用于打开 PSD 和外部嵌字流程。" :value="photoshopPath" field="photoshop" @browse="onPickToolPath('photoshop')" @save="TOOL_FIELD_APPLY.photoshop" />
+            <SettingsToolRow title="外部翻译工具" description="用于「去翻译 / 去校对」，例如 LabelPlusFX。" :value="labelPlusFxPath" field="translation" @browse="onPickToolPath('translation')" @save="TOOL_FIELD_APPLY.translation" />
+            
 
-              <div class="grid gap-4 md:grid-cols-3">
-                <label class="block text-xs text-text-secondary" for="theme-hue">
-                  <span class="mb-2 flex items-center justify-between gap-2">
-                    <span>色相</span>
-                    <output class="font-medium text-text-primary">{{ hue }}°</output>
-                  </span>
-                  <input
-                    id="theme-hue"
-                    type="range"
-                    min="0"
-                    max="360"
-                    step="1"
-                    :value="hue"
-                    class="w-full cursor-pointer accent-accent"
-                    data-testid="theme-hue-slider"
-                    @input="themeStore.setHue(rangeValue($event))"
-                  />
-                </label>
+              
+                <SettingsToolRow title="译文导入脚本" description="通过 Photoshop 从译文生成 PSD 时使用（.jsx）。" :value="typesetImportScript" field="importScript" @browse="onPickToolPath('importScript')" @save="TOOL_FIELD_APPLY.importScript" />
+                <SettingRow title="未配置导入工具时" description="仅在嵌字且当前章节没有 PSD 时生效。"><ToggleGroup type="single" size="sm" :model-value="skipPsFallbackPrompt ? 'open' : 'ask'" aria-label="未配置导入工具时" @update:model-value="value => { if(value) settingsStore.setSkipPsFallbackPrompt(value === 'open') }"><ToggleGroupItem value="ask">询问我</ToggleGroupItem><ToggleGroupItem value="open">直接打开 Photoshop</ToggleGroupItem></ToggleGroup></SettingRow>
+              
+            
+          </CardContent>
+        </Card>
+        <Card id="settings-data" class="settings-card" data-settings-group="data" data-testid="settings-data-safety-section">
+          <CardHeader class="pb-2"><CardTitle class="text-base">数据与备份</CardTitle><CardDescription>保留项目、标记和设置。备份不包含漫画图片与 PSD 文件。</CardDescription></CardHeader>
+          <CardContent class="settings-rows">
+            <SettingRow title="自动备份" description="启动时检查，每 12 小时最多一份，保留最近 20 份。"><Switch :model-value="autoBackup" aria-label="自动备份" data-testid="auto-backup-toggle" @update:model-value="settingsStore.setAutoBackup" /></SettingRow>
+            <SettingRow title="最近备份" :description="latestBackup"><UiButton variant="outline" size="sm" data-testid="db-backup-now" :disabled="backingUp" @click="onBackupNow">{{ backingUp ? '备份中…' : '立即备份' }}</UiButton><UiButton variant="outline" size="sm" data-testid="db-backup-open-all" @click="backupManagerVisible = true">管理备份</UiButton></SettingRow>
+            <p v-if="backupMessage" class="pb-3 text-xs text-muted-foreground" role="status" data-testid="db-backup-message">{{ backupMessage }}</p>
+            
 
-                <label class="block text-xs text-text-secondary" for="theme-saturation">
-                  <span class="mb-2 flex items-center justify-between gap-2">
-                    <span>主色饱和度</span>
-                    <output class="font-medium text-text-primary">{{ saturation }}%</output>
-                  </span>
-                  <input
-                    id="theme-saturation"
-                    type="range"
-                    min="0"
-                    max="100"
-                    step="1"
-                    :value="saturation"
-                    class="w-full cursor-pointer accent-accent"
-                    data-testid="theme-saturation-slider"
-                    @input="themeStore.setSaturation(rangeValue($event))"
-                  />
-                </label>
-
-                <label class="block text-xs text-text-secondary" for="theme-neutral-saturation">
-                  <span class="mb-2 flex items-center justify-between gap-2">
-                    <span>中性色染色</span>
-                    <output class="font-medium text-text-primary">{{ neutralSaturation }}%</output>
-                  </span>
-                  <input
-                    id="theme-neutral-saturation"
-                    type="range"
-                    min="0"
-                    max="30"
-                    step="1"
-                    :value="neutralSaturation"
-                    class="w-full cursor-pointer accent-accent"
-                    data-testid="theme-neutral-saturation-slider"
-                    @input="themeStore.setNeutralSaturation(rangeValue($event))"
-                  />
-                </label>
-              </div>
-            </div>
-
-            <div class="rounded-lg border border-border bg-app-bg p-4" data-testid="theme-preview">
-              <div class="mb-3 flex items-center justify-between gap-3">
-                <span class="text-xs font-medium text-text-secondary">实时预览</span>
-                <span class="flex items-center gap-2 text-xs text-text-tertiary">
-                  <span
-                    class="h-3 w-3 rounded-full border border-border"
-                    :style="{ backgroundColor: activeHueColor }"
-                  />
-                  H {{ hue }} / S {{ saturation }}
-                </span>
-              </div>
-              <div class="grid grid-cols-4 gap-2">
-                <span class="h-10 rounded-md bg-primary" title="主色" />
-                <span class="h-10 rounded-md bg-primary-hover" title="主色悬停" />
-                <span class="h-10 rounded-md bg-success" title="成功" />
-                <span class="h-10 rounded-md bg-warning" title="警告" />
-              </div>
-              <div class="mt-3 rounded-md border border-border bg-card-bg p-3">
-                <p class="text-sm font-semibold text-text-primary">汉化工坊</p>
-                <p class="mt-1 text-xs text-text-secondary">
-                  卡片、文字、边框与选中状态共享同一套主题。
-                </p>
-                <button
-                  type="button"
-                  class="mt-3 rounded-badge bg-accent px-3 py-1.5 text-xs font-medium text-text-on-accent"
-                >
-                  主色按钮
-                </button>
-              </div>
-            </div>
-          </div>
-        </section>
-
-        <!-- 界面与预览：三件"一格就够"的小设置并排一行 -->
-        <div class="grid gap-3 sm:grid-cols-3" data-testid="settings-quick-row">
-          <section
-            data-testid="settings-thumb-section"
-            class="rounded-lg border border-border bg-card-bg p-4 shadow-[var(--shadow-1)]"
-          >
-            <h3 class="settings-title" title="缩略图网格与底部胶片条里方块的大小。">缩略图大小</h3>
-            <div class="mt-3 flex flex-wrap gap-1.5">
-              <label v-for="size in thumbSizes" :key="size" class="settings-choice">
-                <input
-                  type="radio"
-                  name="thumbSize"
-                  :value="size"
-                  :checked="selectedThumb === size"
-                  :data-testid="`thumb-radio-${size}`"
-                  class="sr-only"
-                  @change="onThumbChange(size)"
-                />
-                <span
-                  class="settings-radio"
-                  :class="
-                    selectedThumb === size ? 'border-accent bg-accent' : 'border-border bg-card-bg'
-                  "
-                  aria-hidden="true"
-                >
-                  <span
-                    v-if="selectedThumb === size"
-                    class="h-1.5 w-1.5 rounded-full bg-text-on-accent"
-                  />
-                </span>
-                <span class="text-text-primary">{{ size }}</span>
-              </label>
-            </div>
-            <p class="settings-hint">网格与胶片条的方块大小</p>
-          </section>
-
-          <section
-            data-testid="settings-child-sort-section"
-            class="rounded-lg border border-border bg-card-bg p-4 shadow-[var(--shadow-1)]"
-          >
-            <h3 class="settings-title" title="中文和自定义集数始终排列在数字集数之后。">
-              集数排序
-            </h3>
-            <div class="mt-3 flex flex-wrap gap-1.5">
-              <label v-for="option in childSortOrders" :key="option.value" class="settings-choice">
-                <input
-                  type="radio"
-                  name="childSortOrder"
-                  :value="option.value"
-                  :checked="childSortOrder === option.value"
-                  :data-testid="`child-sort-radio-${option.value}`"
-                  class="sr-only"
-                  @change="onChildSortOrderChange(option.value)"
-                />
-                <span
-                  class="settings-radio"
-                  :class="
-                    childSortOrder === option.value
-                      ? 'border-accent bg-accent'
-                      : 'border-border bg-card-bg'
-                  "
-                  aria-hidden="true"
-                >
-                  <span
-                    v-if="childSortOrder === option.value"
-                    class="h-1.5 w-1.5 rounded-full bg-text-on-accent"
-                  />
-                </span>
-                <span class="text-text-primary">{{ option.label }}</span>
-              </label>
-            </div>
-            <p class="settings-hint">中文、自定义集数排在数字之后</p>
-          </section>
-
-          <section
-            data-testid="settings-play-section"
-            class="rounded-lg border border-border bg-card-bg p-4 shadow-[var(--shadow-1)]"
-          >
-            <h3
-              class="settings-title"
-              title="大图预览 / 对照视图里点页脚那个 ▶ 时，隔多久翻到下一张。计时从「这一张显示好」才开始算，所以慢的 PSD 不会变成一路看加载动画。"
-            >
-              播放间隔
-            </h3>
-            <div class="mt-3 flex flex-wrap gap-1.5">
-              <label
-                v-for="option in PLAY_INTERVAL_OPTIONS"
-                :key="option.value"
-                class="settings-choice"
-              >
-                <input
-                  type="radio"
-                  name="playInterval"
-                  :value="option.value"
-                  :checked="playIntervalMs === option.value"
-                  :data-testid="`play-interval-radio-${option.value}`"
-                  class="sr-only"
-                  @change="onPlayIntervalChange(option.value)"
-                />
-                <span
-                  class="settings-radio"
-                  :class="
-                    playIntervalMs === option.value
-                      ? 'border-accent bg-accent'
-                      : 'border-border bg-card-bg'
-                  "
-                  aria-hidden="true"
-                >
-                  <span
-                    v-if="playIntervalMs === option.value"
-                    class="h-1.5 w-1.5 rounded-full bg-text-on-accent"
-                  />
-                </span>
-                <span class="text-text-primary">{{ option.label }}</span>
-              </label>
-            </div>
-            <p class="settings-hint">点页脚 ▶ 时生效，从「这一张显示好」起算</p>
-          </section>
-        </div>
+              
+                <SettingRow title="导入已有数据" description="从旧版数据库或 JSON 合并项目与标记。" data-testid="settings-import-section"><UiButton variant="outline" size="sm" data-testid="import-legacy-json" :disabled="importingLegacyData" @click="importLegacyJson">{{ importingLegacyData ? '导入中…' : '选择数据导入' }}</UiButton></SettingRow>
+                <SettingRow title="操作记录与诊断" description="查阅标记历史，或在遇到问题时检查运行状态。"><UiButton variant="ghost" size="sm" data-testid="mark-history-open" @click="markHistoryVisible = true">标记记录</UiButton><UiButton variant="ghost" size="sm" data-testid="diagnostics-open" @click="diagnosticsVisible = true">诊断</UiButton><UiButton variant="ghost" size="sm" data-testid="db-backup-reveal" @click="onRevealBackups">打开备份文件夹</UiButton></SettingRow>
+              
+            
+          </CardContent>
+        </Card>
       </div>
-
-      <!-- 分组二：外部工具（工作流核心，配错「去X」就废，提到最前） -->
-      <div class="flex flex-col gap-3">
-        <h2 class="settings-group">外部工具</h2>
-
-        <!-- 外部工具 -->
-        <section
-          data-testid="settings-tool-section"
-          class="rounded-lg border border-border bg-card-bg p-5 shadow-[var(--shadow-1)]"
-        >
-          <h3 class="settings-title">外部工具</h3>
-          <p class="settings-desc">
-            缩略图与对照视图上的「去X」按钮按当前模式调用这里的程序：翻译 / 校对 →
-            LabelPlusFX；嵌字（该话尚无 PSD 时）→ 在 Photoshop 里运行译文导入脚本；监修 →
-            Photoshop。
-          </p>
-
-          <div class="space-y-4">
-            <div v-for="field in toolFields" :key="field.key">
-              <label
-                class="mb-1 block text-[12px] font-medium text-text-primary"
-                :for="`tool-${field.key}`"
-              >
-                {{ field.label }}
-              </label>
-              <div class="flex flex-nowrap items-center gap-1.5">
-                <input
-                  :id="`tool-${field.key}`"
-                  :value="field.value"
-                  :data-testid="`tool-path-${field.key}`"
-                  type="text"
-                  spellcheck="false"
-                  :placeholder="field.placeholder"
-                  class="h-8 min-w-0 flex-1 rounded-badge border border-border bg-transparent px-2 text-[13px] text-text-primary transition-colors placeholder:text-text-tertiary focus-visible:border-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
-                  @change="onToolPathInput(field.key, $event)"
-                />
-                <button
-                  type="button"
-                  :data-testid="`tool-browse-${field.key}`"
-                  class="h-8 shrink-0 rounded-badge bg-accent px-2.5 text-[13px] font-medium text-text-on-accent transition-colors hover:bg-primary-hover active:bg-primary-active focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
-                  @click="onPickToolPath(field.key)"
-                >
-                  浏览…
-                </button>
-                <button
-                  type="button"
-                  :data-testid="`tool-clear-${field.key}`"
-                  class="h-8 shrink-0 rounded-badge border bg-transparent px-2.5 text-[13px] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
-                  :class="
-                    field.value
-                      ? 'border-border text-text-secondary hover:border-danger hover:bg-danger hover:text-danger-fg'
-                      : 'cursor-not-allowed border-border text-text-tertiary'
-                  "
-                  :disabled="!field.value"
-                  @click="onClearToolPath(field.key)"
-                >
-                  清除
-                </button>
-              </div>
-              <p class="mt-1 text-[11px] leading-4 text-text-tertiary">{{ field.hint }}</p>
-            </div>
-          </div>
-
-          <label
-            class="mt-4 flex cursor-pointer items-center gap-3 border-t border-border pt-4 text-sm text-text-primary"
-          >
-            <input
-              type="checkbox"
-              :checked="skipPsFallbackPrompt"
-              data-testid="skip-ps-fallback-toggle"
-              class="sr-only"
-              @change="onSkipPsFallbackChange"
-            />
-            <span
-              class="flex h-5 w-9 shrink-0 items-center rounded-full border border-border transition-colors"
-              :class="skipPsFallbackPrompt ? 'bg-accent' : 'bg-border-strong'"
-              aria-hidden="true"
-            >
-              <span
-                class="h-4 w-4 transform rounded-full bg-text-on-accent shadow transition-transform"
-                :class="skipPsFallbackPrompt ? 'translate-x-4' : 'translate-x-0.5'"
-              />
-            </span>
-            <span>嵌字缺少 PSD 且未配置译文导入工具时不再提示，直接打开 Photoshop</span>
-          </label>
-        </section>
-      </div>
-
-      <!-- 分组三：导入与自检 -->
-      <div class="flex flex-col gap-3">
-        <h2 class="settings-group">导入与自检</h2>
-        <div class="grid gap-3 sm:grid-cols-2" data-testid="settings-import-check-row">
-          <!-- 父级自检 -->
-          <section
-            data-testid="settings-self-check-section"
-            class="rounded-lg border border-border bg-card-bg p-5 shadow-[var(--shadow-1)]"
-          >
-            <h3
-              class="settings-title"
-              title="开启后，点击父级行的「刷新并检测新章节」时将跳过确认弹窗直接导入未冲突的新章节；同集数冲突仍需要单独选择。"
-            >
-              父级自检
-            </h3>
-            <label class="mt-3 flex cursor-pointer items-center gap-3 text-sm text-text-primary">
-              <input
-                type="checkbox"
-                :checked="silentSelfCheck"
-                data-testid="silent-self-check-toggle"
-                class="sr-only"
-                @change="onSilentSelfCheckChange"
-              />
-              <span
-                class="flex h-5 w-9 items-center rounded-full border border-border transition-colors"
-                :class="silentSelfCheck ? 'bg-accent' : 'bg-border-strong'"
-                aria-hidden="true"
-              >
-                <span
-                  class="h-4 w-4 transform rounded-full bg-text-on-accent shadow transition-transform"
-                  :class="silentSelfCheck ? 'translate-x-4' : 'translate-x-0.5'"
-                />
-              </span>
-              <span>静默导入新增章节</span>
-            </label>
-            <p class="settings-hint">刷新父级时跳过确认弹窗；同集数冲突仍需单独选</p>
-          </section>
-          <!-- 旧数据导入 -->
-          <section
-            data-testid="settings-import-section"
-            class="rounded-lg border border-border bg-card-bg p-5 shadow-[var(--shadow-1)]"
-          >
-            <h3
-              class="settings-title"
-              title="支持汉化工坊 SQLite 数据库（.sqlite / .sqlite3 / .db）与三类 JSON，可一次多选；应用会自动识别并安全合并，不覆盖现有项目名称与集数。"
-            >
-              导入旧版数据
-            </h3>
-            <button
-              type="button"
-              class="mt-3 rounded-badge bg-accent px-4 py-2 text-sm font-medium text-text-on-accent transition-colors hover:bg-primary-hover active:bg-primary-active disabled:cursor-not-allowed disabled:opacity-40"
-              :disabled="importingLegacyData"
-              data-testid="import-legacy-json"
-              @click="importLegacyJson"
-            >
-              {{ importingLegacyData ? '导入中…' : '选择数据导入' }}
-            </button>
-            <p class="settings-hint">
-              旧数据在旧程序旁的 data 目录里：数据库 data\database\qianzi-gongfang.sqlite，更老的
-              JSON 在 data\config\ 下（memory.json、font-manager.json）。
-            </p>
-            <p class="settings-hint">自动识别并安全合并，不覆盖现有名称与集数</p>
-          </section>
-        </div>
-      </div>
-
-      <!-- 分组四：数据安全 -->
-      <div class="flex flex-col gap-3">
-        <h2 class="settings-group">数据安全</h2>
-
-        <!-- 数据安全 -->
-        <section
-          data-testid="settings-data-safety-section"
-          class="rounded-lg border border-border bg-card-bg p-5 shadow-[var(--shadow-1)]"
-        >
-          <h3
-            class="settings-title"
-            title="备份是一致性快照（含未合并的写入），放在 data/backups/，只保留最近 20 份。"
-          >
-            数据安全
-          </h3>
-          <p class="settings-desc">标记是手工活，丢了没法重做。这里给三样兜底。</p>
-          <div class="flex flex-wrap items-center gap-2">
-            <button
-              type="button"
-              class="h-8 rounded-badge bg-accent px-3 text-[13px] font-medium text-text-on-accent transition-colors hover:bg-primary-hover active:bg-primary-active disabled:cursor-not-allowed disabled:opacity-40"
-              :disabled="backingUp"
-              data-testid="db-backup-now"
-              @click="onBackupNow"
-            >
-              {{ backingUp ? '备份中…' : '立即备份' }}
-            </button>
-            <button
-              type="button"
-              class="h-8 rounded-badge border border-border bg-card-bg px-3 text-[13px] text-text-secondary transition-colors hover:bg-card-bg-hover hover:text-text-primary"
-              data-testid="mark-history-open"
-              @click="markHistoryVisible = true"
-            >
-              标记记录
-            </button>
-            <button
-              type="button"
-              class="h-8 rounded-badge border border-border bg-card-bg px-3 text-[13px] text-text-secondary transition-colors hover:bg-card-bg-hover hover:text-text-primary"
-              data-testid="db-backup-reveal"
-              @click="onRevealBackups"
-            >
-              打开备份文件夹
-            </button>
-            <button
-              type="button"
-              class="h-8 rounded-badge border border-border bg-card-bg px-3 text-[13px] text-text-secondary transition-colors hover:bg-card-bg-hover hover:text-text-primary"
-              data-testid="diagnostics-open"
-              @click="diagnosticsVisible = true"
-            >
-              诊断
-            </button>
-            <label
-              class="flex cursor-pointer items-center gap-2 rounded-badge px-2 py-1 text-[13px] text-text-secondary transition-colors hover:bg-card-bg-hover"
-            >
-              <input
-                type="checkbox"
-                :checked="autoBackup"
-                data-testid="auto-backup-toggle"
-                class="accent-[var(--accent)]"
-                @change="onAutoBackupChange"
-              />
-              启动时自动备份（每 12 小时最多一份）
-            </label>
-          </div>
-          <p
-            v-if="backupMessage"
-            class="mt-2 text-xs text-text-secondary"
-            data-testid="db-backup-message"
-          >
-            {{ backupMessage }}
-          </p>
-          <DbBackupList :items="visibleBackups" @restore="openRestore" />
-          <div v-if="backups.length > CARD_BACKUP_PREVIEW" class="mt-2 flex justify-end">
-            <button
-              type="button"
-              class="rounded-badge px-1 text-[12px] text-text-secondary transition-colors hover:text-accent"
-              data-testid="db-backup-open-all"
-              @click="backupManagerVisible = true"
-            >
-              全部 {{ backups.length }} 条 ›
-            </button>
-          </div>
-        </section>
-      </div>
-
-      <!-- 关于（单独一张卡片，不再套分组标题 —— 它自己就是标题） -->
-      <section
-        data-testid="settings-about-section"
-        class="rounded-lg border border-border bg-card-bg p-5 shadow-[var(--shadow-1)]"
-      >
-        <h3 class="settings-title">关于</h3>
-
-        <!-- 品牌头卡（2026-10-04 照参照图重做）：图标 + 名称 + 定位语 + 版本·渠道 -->
-        <div class="mt-3 flex items-center gap-4 rounded-lg bg-media-bg p-4">
-          <div
-            class="flex h-14 w-14 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-primary to-primary-active text-xl font-bold text-text-on-accent"
-            aria-hidden="true"
-          >
-            汉
-          </div>
-          <div class="min-w-0">
-            <p class="text-[17px] font-semibold leading-tight text-text-primary">{{ APP_NAME }}</p>
-            <p class="mt-1 text-xs text-text-secondary">{{ APP_DESCRIPTION }}</p>
-            <p class="mt-1 text-[11px] text-text-tertiary">
-              版本
-              <span data-testid="about-version">{{ APP_VERSION }}</span>
-              · 文件夹版 / 单文件版
-            </p>
-          </div>
-        </div>
-
-        <!-- 检查更新（2026-10-04）：只"发现 + 引导下载"，不自动替换。
-             整宽浅底按钮照参照图语言：bg-primary-soft + 主色字，hover 走 primary-soft-hover。 -->
-        <button
-          type="button"
-          class="mt-4 flex h-10 w-full items-center justify-center gap-2 rounded-badge bg-primary-soft text-sm font-medium text-accent transition-colors hover:bg-[var(--primary-soft-hover)] active:bg-[var(--primary-soft-strong)] disabled:cursor-not-allowed disabled:opacity-40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
-          data-testid="update-check"
-          :disabled="updateChecking"
-          @click="onCheckUpdate"
-        >
-          <svg
-            class="h-4 w-4"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="2"
-            stroke-linecap="round"
-            stroke-linejoin="round"
-            aria-hidden="true"
-          >
-            <path d="M21 12a9 9 0 1 1-2.64-6.36" />
-            <path d="M21 3v6h-6" />
-          </svg>
-          {{ updateChecking ? '正在检查…' : '检查更新' }}
-        </button>
-
-        <div class="mt-3 flex flex-col gap-2">
-          <div class="flex items-center gap-3">
-            <button
-              v-if="updateManifest"
-              type="button"
-              class="rounded-badge bg-accent px-3 py-1.5 text-sm font-semibold text-text-on-accent transition-colors hover:bg-primary-hover active:bg-primary-active focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
-              data-testid="update-download"
-              @click="onOpenDownload"
-            >
-              去下载
-            </button>
-          </div>
-          <p class="text-xs leading-5 text-text-tertiary" data-testid="update-status">
-            {{ updateStatusText }}
-          </p>
-          <p class="text-xs leading-5 text-text-tertiary">
-            更新：文件夹版解压后覆盖程序文件（保留 data 目录）；单文件版直接替换
-            exe。两种方式数据都不受影响。
-          </p>
-        </div>
-      </section>
+      <footer class="mt-6 border-t border-border py-4" data-testid="settings-about-section">
+        <div class="flex flex-wrap items-center justify-between gap-3"><p class="text-xs text-muted-foreground">{{ APP_NAME }} <span class="ml-2" data-testid="about-version">{{ APP_VERSION }}</span></p><div class="flex gap-2"><UiButton v-if="updateManifest" size="sm" data-testid="update-download" @click="onOpenDownload">去下载</UiButton><UiButton variant="ghost" size="sm" data-testid="update-check" :disabled="updateChecking" @click="onCheckUpdate">{{ updateChecking ? '正在检查…' : '检查更新' }}</UiButton></div></div>
+        <p v-if="updateStatusText" class="mt-2 text-xs text-muted-foreground" data-testid="update-status">{{ updateStatusText }}</p>
+      </footer>
     </div>
   </div>
-
-  <MarkHistoryDialog
-    v-if="markHistoryVisible"
-    :open="true"
-    @close="markHistoryVisible = false"
-    @toast="onDialogToast"
-  />
-
-  <DiagnosticsDialog
-    v-if="diagnosticsVisible"
-    :open="true"
-    @close="diagnosticsVisible = false"
-    @toast="onDialogToast"
-  />
-
-  <BackupManagerDialog
-    v-if="backupManagerVisible"
-    :items="backups"
-    @close="backupManagerVisible = false"
-    @refresh="refreshBackups()"
-    @restore="openRestore"
-  />
-
-  <RestoreMarksDialog
-    :open="restoreOpen"
-    :backup="restoreTarget"
-    @close="restoreOpen = false"
-    @restored="onMarksRestored"
-    @toast="onDialogToast"
-  />
+  <MarkHistoryDialog v-if="markHistoryVisible" :open="true" @close="markHistoryVisible = false" @toast="onDialogToast" />
+  <DiagnosticsDialog v-if="diagnosticsVisible" :open="true" @close="diagnosticsVisible = false" @toast="onDialogToast" />
+  <BackupManagerDialog v-if="backupManagerVisible" :items="backups" @close="backupManagerVisible = false" @refresh="refreshBackups()" @restore="openRestore" />
+  <RestoreMarksDialog :open="restoreOpen" :backup="restoreTarget" @close="restoreOpen = false" @restored="onMarksRestored" @toast="onDialogToast" />
 </template>
+<style scoped>
+
+.settings-card { container-type:inline-size; scroll-margin-top:20px; box-shadow:none; border-color:var(--border); }
+.settings-rows { padding-top:0; padding-bottom:4px; }
+</style>

@@ -1,4 +1,5 @@
 import type { Config } from 'tailwindcss'
+import animate from 'tailwindcss-animate'
 
 /*
  * Tailwind theme extension — all values reference CSS variables defined
@@ -8,10 +9,23 @@ import type { Config } from 'tailwindcss'
  * utility (bg-accent, text-primary, etc.) without a Tailwind recompile.
  */
 const config: Config = {
+  plugins: [animate],
   content: ['./src/renderer/index.html', './src/renderer/src/**/*.{vue,ts,tsx,js,jsx}'],
   theme: {
     extend: {
       colors: {
+        background: 'var(--app-bg)',
+        foreground: 'var(--text-primary)',
+        card: { DEFAULT: 'var(--card-bg)', foreground: 'var(--text-primary)' },
+        popover: { DEFAULT: 'var(--card-bg)', foreground: 'var(--text-primary)' },
+        muted: { DEFAULT: 'var(--bg-sunken)', foreground: 'var(--text-secondary)' },
+        secondary: { DEFAULT: 'var(--card-bg-hover)', foreground: 'var(--text-primary)' },
+        destructive: { DEFAULT: 'var(--danger)', foreground: 'var(--danger-fg)' },
+        'primary-foreground': 'var(--text-on-accent)',
+        'accent-foreground': 'var(--text-primary)',
+        'ui-accent': 'var(--selected-bg)',
+        input: 'var(--border)',
+        ring: 'var(--accent)',
         primary: 'var(--primary)',
         'primary-hover': 'var(--primary-hover)',
         'primary-active': 'var(--primary-active)',
@@ -54,14 +68,16 @@ const config: Config = {
         'warning-soft': 'var(--warning-soft)',
         info: 'var(--info)',
         'info-fg': 'var(--info-fg)',
-        'info-soft': 'var(--info-soft)'
+        'info-soft': 'var(--info-soft)',
+        'warning-on-soft': 'var(--warning-on-soft)',
+        'info-on-soft': 'var(--info-on-soft)'
       },
       borderRadius: {
         badge: 'var(--radius-badge)'
       }
     }
   },
-  plugins: []
+
 }
 
 export default config

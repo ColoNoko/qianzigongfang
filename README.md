@@ -53,16 +53,21 @@
 pnpm install
 
 pnpm dev            # 开发模式（热更新）
-pnpm test           # 全量单元测试
+pnpm test           # 日常核心回归；全量用 pnpm test:full
 pnpm run typecheck  # tsc + vue-tsc
 pnpm lint           # eslint
 
-pnpm build:win:portable   # 单文件版（产物在 dist/）
-node scripts/deliver-windows.mjs --archive   # 文件夹版（产物在 ../dist-packages/，需本机有 7-Zip）
+pnpm build:win:portable   # 单文件版 + 源码包，产物在 release/latest/
+pnpm build:win:unpack     # 先构建文件夹版 release/latest/win-unpacked/
+pnpm release:win:app      # 将已构建的文件夹版归档为 latest ZIP（不启动程序）
+pnpm export:win-source --dry-run  # 仅列出源码包文件，无写入
+pnpm test:scripts         # 本地导出/归档脚本的临时目录回归测试
 ```
 
 Windows 打包会从 `npmmirror` 镜像下载 Electron（见 `electron-builder.yml` 的 `electronDownload.mirror`）；
 海外环境删掉那段即回退官方源。
+
+当前本地交付统一使用 `release/latest` 与固定 latest 文件名；历史 Releases 文件名不变。全部构建命令显式禁用自动发布。完整命令、旧入口迁移和备份规则见 [本地交付说明](doc/本地交付说明.md)。
 
 ## 检查更新是怎么工作的
 

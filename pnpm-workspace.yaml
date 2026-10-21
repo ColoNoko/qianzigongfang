@@ -3,3 +3,4 @@ allowBuilds:
   electron: true
   esbuild: true
   vue-demi: true
+  koffi: true

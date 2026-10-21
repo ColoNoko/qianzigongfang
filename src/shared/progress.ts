@@ -38,20 +38,21 @@ export interface ChapterDutyFact {
 }
 
 /** 进度页的一行（一本漫画 × 当前职责）。 */
-export interface ParentDutyProgress {  parentId: string
+export interface ParentDutyProgress {
+  parentId: string
   title: string
   /** 这本挂的职责（声明过的，或界面推断出来的）；空 = 没设职责。 */
   duties: WorkMode[]
   /** 当前口径（点击切换后的那个职责）；没职责时为 null。 */
   duty: WorkMode | null
-/**
- * 「进展」/「更新至」这一列的显示串 = **最近"收工"的那一话**（该话在当前职责下全部文件都完成），
- * 例如 `第13集` / `归档`；一话都没收工 → `—`。
- * ⚠️ 不是"最近标记的那一话"（那是"还在做哪一话"），也不是"集数最大的那一话" ——
- * 2026-10-03 之前用的就是后者，用户反馈"容易误导"（一话没做完却报个集号）。
- *
- * 2026-10-04：列名从「进展」改成「**更新至**」（用户拍板）——"更新到第几话"比"进展"直白。
- */
+  /**
+   * 「进展」/「更新至」这一列的显示串 = **最近"收工"的那一话**（该话在当前职责下全部文件都完成），
+   * 例如 `第13集` / `归档`；一话都没收工 → `—`。
+   * ⚠️ 不是"最近标记的那一话"（那是"还在做哪一话"），也不是"集数最大的那一话" ——
+   * 2026-10-03 之前用的就是后者，用户反馈"容易误导"（一话没做完却报个集号）。
+   *
+   * 2026-10-04：列名从「进展」改成「**更新至**」（用户拍板）——"更新到第几话"比"进展"直白。
+   */
   latestCookedChapter: string
   /**
    * 「最近出勤」= 距上次**动过手**（任何一张标记）的天数；**null = 该职责下从没标记过**。
@@ -109,10 +110,7 @@ export function lastMarkAtOf(facts: readonly ChapterDutyFact[], duty: WorkMode):
  * 与 `lastMarkAtOf` 的唯一区别：只看**已收工**的话（`isChapterCooked`）。
  * 所以它必然 **≤ `lastMarkAtOf`**，换成"距今天数"就是 **≥**（见 `daysSinceLastCooked` 的不变量）。
  */
-export function lastCookedAtOf(
-  facts: readonly ChapterDutyFact[],
-  duty: WorkMode
-): number | null {
+export function lastCookedAtOf(facts: readonly ChapterDutyFact[], duty: WorkMode): number | null {
   let latest: number | null = null
   for (const fact of facts) {
     if (!isChapterCooked(fact, duty)) continue
@@ -295,9 +293,27 @@ export interface ProgressSortOption {
 }
 
 export const PROGRESS_SORT_OPTIONS: readonly ProgressSortOption[] = [
-  { value: 'default:desc', key: 'default', direction: 'desc', label: '默认顺序', hint: '项目页那一套：最近改动在前' },
-  { value: 'completion:desc', key: 'completion', direction: 'desc', label: '完成度↓', hint: '完成度高的在前' },
-  { value: 'completion:asc', key: 'completion', direction: 'asc', label: '完成度↑', hint: '待烤多的在前' },
+  {
+    value: 'default:desc',
+    key: 'default',
+    direction: 'desc',
+    label: '默认顺序',
+    hint: '项目页那一套：最近改动在前'
+  },
+  {
+    value: 'completion:desc',
+    key: 'completion',
+    direction: 'desc',
+    label: '完成度↓',
+    hint: '完成度高的在前'
+  },
+  {
+    value: 'completion:asc',
+    key: 'completion',
+    direction: 'asc',
+    label: '完成度↑',
+    hint: '待烤多的在前'
+  },
   {
     value: 'update:desc',
     key: 'update',
@@ -305,7 +321,13 @@ export const PROGRESS_SORT_OPTIONS: readonly ProgressSortOption[] = [
     label: '上次更新↓',
     hint: '完整收工间隔长的在前（"从未"算最长）'
   },
-  { value: 'update:asc', key: 'update', direction: 'asc', label: '上次更新↑', hint: '间隔短的在前' },
+  {
+    value: 'update:asc',
+    key: 'update',
+    direction: 'asc',
+    label: '上次更新↑',
+    hint: '间隔短的在前'
+  },
   { value: 'title:asc', key: 'title', direction: 'asc', label: '名称 A → Z', hint: '按漫画名排' }
 ]
 
@@ -455,6 +477,15 @@ function emptyDone(): Record<WorkMode, number> {
 
 /** 时间线上的一条：**某一天**，某本漫画、某一话、某个职责干完了 N 张。 */
 export interface ProgressTimelineEvent {
+  timeSources?: import('./statistics-time').StatisticsTimeSource[]
+  chapterCompleted?: boolean
+  /**
+   * 这一话的 id（2026-10-05 从并行分支 T8 移植时补的）。
+   *
+   * 分组要靠它认"是不是同一话"：两话可能有**同样的显示名**（不同父级下的"第1集"），
+   * 光比 `chapterNumber` 会把它们误并成一条。缺省时回落到 `chapterNumber`。
+   */
+  childId?: string
   /** 这条对应那天的**最后一笔**完成时间（排序与显示日期都用它）。 */
   at: number
   parentTitle: string
@@ -466,6 +497,8 @@ export interface ProgressTimelineEvent {
 
 /** 时间线的数据源（= 主进程 `ChildMarkStatistics` 里用得着的部分）。 */
 export interface TimelineSourceStat {
+  fileCount?: number
+  datedEntries?: Partial<Record<WorkMode, {at:number; source: import('./statistics-time').StatisticsTimeSource}[]>>
   childId: string
   completedTimestamps: Record<WorkMode, readonly number[]>
 }
@@ -546,6 +579,9 @@ export function buildTimelineEvents(
 
       for (const [day, at] of latestOfDay) {
         events.push({
+          timeSources: [...new Set(stat.datedEntries?.[mode]?.filter(entry => localDayStart(entry.at) === day).map(entry => entry.source) ?? ['mark' as const])],
+          chapterCompleted: !!stat.fileCount && stamps.length >= stat.fileCount && at === Math.max(...stamps),
+          childId: stat.childId,
           at,
           parentTitle: place.parentTitle,
           chapterNumber: place.chapterNumber,
@@ -558,4 +594,50 @@ export function buildTimelineEvents(
 
   // 稳定排序：现代 V8 的 sort 是稳定的，同一时刻保持插入顺序
   return events.sort((a, b) => b.at - a.at).slice(0, limit)
+}
+
+export interface ProgressTimelineGroup {
+  key: string
+  day: number
+  at: number
+  parentTitle: string
+  mode: WorkMode
+  fileCount: number
+  chapters: ProgressTimelineEvent[]
+}
+
+/** Aggregate before applying the display limit, so a day's manga total is never cut short. */
+export function groupTimelineEvents(
+  events: readonly ProgressTimelineEvent[],
+  limit = TIMELINE_LIMIT
+): ProgressTimelineGroup[] {
+  const groups = new Map<string, ProgressTimelineGroup>()
+  for (const event of events) {
+    const day = localDayStart(event.at)
+    const key = JSON.stringify([day, event.parentTitle, event.mode])
+    let group = groups.get(key)
+    if (!group) {
+      group = {
+        key,
+        day,
+        at: event.at,
+        parentTitle: event.parentTitle,
+        mode: event.mode,
+        fileCount: 0,
+        chapters: []
+      }
+      groups.set(key, group)
+    }
+    group.at = Math.max(group.at, event.at)
+    group.fileCount += event.fileCount
+    const existing = group.chapters.find(
+      (chapter) =>
+        (chapter.childId ?? chapter.chapterNumber) === (event.childId ?? event.chapterNumber)
+    )
+    if (existing) {
+      existing.fileCount += event.fileCount
+      existing.at = Math.max(existing.at, event.at)
+    } else group.chapters.push({ ...event })
+  }
+  return [...groups.values()].sort((a, b) => b.at - a.at).slice(0, limit)
 }

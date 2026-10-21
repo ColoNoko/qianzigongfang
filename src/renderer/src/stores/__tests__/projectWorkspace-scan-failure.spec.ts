@@ -22,7 +22,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
 import { ChildRootMissingError, useProjectWorkspace } from '../projectWorkspace'
-import { PAIRED_PSD_STATS_VERSION } from '@shared/status'
+import { PAIRED_MODE_STATS_VERSION, PAIRED_PSD_STATS_VERSION } from '@shared/status'
 import type { ChildProject, ParentProject, PsdStat } from '@shared/types'
 
 const FOLDER = 'D:\\comic\\ch2'
@@ -110,8 +110,7 @@ describe('目录读不到时不许记成 0 页', () => {
     expect(result.skipped).toEqual(['第2集'])
 
     const payload = projectSaveProgress.mock.calls.at(-1)?.[0] as
-      | Array<{ childId: string; psdStats?: PsdStat[]; lastMtimeMs?: number }>
-      | undefined
+      Array<{ childId: string; psdStats?: PsdStat[]; lastMtimeMs?: number }> | undefined
     const persisted = payload?.find((update) => update.childId === 'c2')
     expect(persisted?.psdStats ?? []).toHaveLength(3)
     expect(persisted?.lastMtimeMs).toBe(111)
@@ -174,8 +173,7 @@ describe('批量标记跨 await 不许抱旧对象', () => {
 
     expect(result.marked).toBe(1)
     const payload = projectSaveProgress.mock.calls.at(-1)?.[0] as
-      | Array<{ childId: string; psdStats?: PsdStat[] }>
-      | undefined
+      Array<{ childId: string; psdStats?: PsdStat[] }> | undefined
     const persisted = payload?.find((update) => update.childId === 'c2')
     // 旧缓存是 3 页；这一话实际只扫到 1 页 —— 落库的必须是新的 1 页。
     expect(persisted?.psdStats ?? []).toHaveLength(1)
@@ -219,5 +217,60 @@ describe('目录不在 vs 读不到：错误类型要能分开', () => {
 
     await expect(workspace.scanChild(child)).rejects.toThrow()
     await expect(workspace.scanChild(child)).rejects.not.toBeInstanceOf(ChildRootMissingError)
+  })
+})
+
+/**
+ * 统计补漏（2026-10-05 从并行分支 T6 移植）。
+ *
+ * 重扫时**只有模式统计变了**（比如这一张图的「校对」完成了），PSD 张数与修改时间
+ * 都没变 —— 旧判定 `progressChanged` 不含模式统计，于是跳过落库，侧栏与成就页的
+ * 重扫结果一重启就回退。这条锁就是那个场景。
+ */
+describe('重扫只变了模式统计也要落库', () => {
+  it('校对数变了、但 PSD 张数与修改时间没变 ⇒ 也触发落库', async () => {
+    bridgeMock('scanChildProject').mockResolvedValue({
+      jpgPairs: [
+        {
+          jpgPath: `${FOLDER}\\01.jpg`,
+          psd: { absPath: `${FOLDER}\\01.psd`, mtimeMs: 111, ctimeMs: 111, status: 'pending' }
+        }
+      ],
+      txtFiles: [],
+      errors: []
+    })
+
+    const child = makeChild()
+    // 库里的旧缓存：张数 / 时间与重扫结果**完全一致**；模式统计是"全空"。
+    // 这样旧的判定（张数/时间/版本）全都不变 —— 唯一的差异就是「校对」完成了。
+    child.psdStats = [{ mtimeMs: 111, ctimeMs: 111 }]
+    child.lastMtimeMs = 111
+    child.modeStatsVersion = PAIRED_MODE_STATS_VERSION
+    child.psdModeStats = { typeset: [], translated: [], proofread: [], supervised: [] }
+    const workspace = useProjectWorkspace()
+    workspace.parents = [makeParent(child)]
+    workspace.psdStatusOverridesLoaded = true
+
+    vi.spyOn(workspace, 'applyPsdStatusOverrides').mockReturnValue([
+      {
+        jpgPath: `${FOLDER}\\01.jpg`,
+        psd: {
+          absPath: `${FOLDER}\\01.psd`,
+          mtimeMs: 111,
+          ctimeMs: 111,
+          status: 'pending',
+          modes: { typeset: false, translated: false, proofread: true, supervised: false },
+          modeTimestamps: { proofread: 1000 }
+        }
+      }
+    ])
+
+    await workspace.scanChild(child)
+
+    expect(projectSaveProgress).toHaveBeenCalledTimes(1)
+    const payload = projectSaveProgress.mock.calls.at(-1)?.[0] as
+      Array<{ childId: string; psdModeStats?: Record<string, number[]> }> | undefined
+    const persisted = payload?.find((update) => update.childId === 'c2')
+    expect(persisted?.psdModeStats?.proofread ?? []).toHaveLength(1)
   })
 })

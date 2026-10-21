@@ -1,5 +1,6 @@
+import { hydrateProjectTree } from '@shared/project-tree'
 import { defineStore } from 'pinia'
-import { readRememberedRoots } from '@shared/paths'
+import { requireCompleteScan } from '@shared/project-scan'
 import type {
   ChildProject,
   ChildProgressUpdate,
@@ -7,8 +8,6 @@ import type {
   ParentProject,
   PsdStat
 } from '@shared/types'
-import { normalizeChapterNumber } from '@shared/chapter'
-import { normalizeDuties } from '@shared/duties'
 import { countablePsdStats, PAIRED_PSD_STATS_VERSION } from '@shared/status'
 
 /**
@@ -40,37 +39,6 @@ export interface DashboardChild extends ChildProject {
 /** Parent whose children carry PSD stats. */
 export interface DashboardParent extends ParentProject {
   children: DashboardChild[]
-}
-
-/** Normalize arbitrary registry payload into `DashboardParent[]`. */
-function hydrate(raw: unknown): DashboardParent[] {
-  if (!Array.isArray(raw)) return []
-  return (raw as DashboardParent[]).map((p) => {
-    // 同 hydrateParents：**固定字段重建**容易丢字段（2026-10-03 的 duties 与 sourceRoots 都栽在这）。
-    // 新增父级字段时，这里和 `projectWorkspace.hydrateParents` **两处都要补**（有契约锁盯着）。
-    const duties = normalizeDuties(p.duties)
-    const sourceRoots = readRememberedRoots(p.sourceRoots)
-    return {
-    id: p.id,
-    title: p.title,
-    sourceRoot: typeof p.sourceRoot === 'string' ? p.sourceRoot : undefined,
-    ...(sourceRoots.length > 0 ? { sourceRoots } : {}),
-    ...(duties.length > 0 ? { duties } : {}),
-    lastMtimeMs: p.lastMtimeMs ?? 0,
-    children: (p.children ?? []).map((c) => ({
-      id: c.id,
-      parentTitle: c.parentTitle,
-      folderPath: c.folderPath,
-      chapterNumber: normalizeChapterNumber(c.chapterNumber),
-      projectTitle: c.projectTitle,
-      lastMtimeMs: c.lastMtimeMs ?? 0,
-      psdStats: c.psdStats ?? [],
-      statsVersion: c.statsVersion,
-      psdModeStats: c.psdModeStats,
-      modeStatsVersion: c.modeStatsVersion
-    }))
-    }
-  })
 }
 
 function childHasStoredStats(rawChild: unknown): boolean {
@@ -128,9 +96,9 @@ async function enrichMissingStats(
       const child = parent.children[childIndex]
       const rawChild = rawParent?.children?.[childIndex]
       if (childHasStoredStats(rawChild)) continue
-      changed = true
       try {
         const scan = await window.comicType.scanChildProject(child.folderPath)
+        requireCompleteScan(scan)
         const childOverrides = { ...overrides }
         const remembered =
           typeof window.comicType?.memoryGetProject === 'function'
@@ -164,6 +132,7 @@ async function enrichMissingStats(
         child.psdStats = statsFromPairs(scan.jpgPairs, childOverrides)
         child.lastMtimeMs = latestPairMtime(scan.jpgPairs)
         child.statsVersion = PAIRED_PSD_STATS_VERSION
+        changed = true
       } catch {
         // ⚠️ 读不到目录（被删/改名、网络盘没挂载）时**不许盖成"已统计"**。
         // 一旦写上 statsVersion，`childHasStoredStats()` 就判定"已统计"，
@@ -171,8 +140,7 @@ async function enrichMissingStats(
         // 2026-09-30 审查修掉了 `scanChild()` 里同一类问题，漏了这里；2026-10-01 补上。
         // 留着 statsVersion 空缺 = 仍然"未统计"，下次进首页会重试，目录放回来就自愈。
         // psdStats/lastMtimeMs 保持原样赋空值：形状与旧行为一致，界面不用改。
-        child.psdStats = []
-        child.lastMtimeMs = 0
+        // Preserve the historical values and allow a later successful retry.
       }
     }
     parent.lastMtimeMs = parent.children.reduce(
@@ -246,3 +214,7 @@ export const useProjectStore = defineStore('project', {
     }
   }
 })
+
+function hydrate(raw: unknown): DashboardParent[] {
+  return hydrateProjectTree(raw, 'stored') as DashboardParent[]
+}

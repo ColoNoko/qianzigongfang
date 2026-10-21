@@ -1,8 +1,8 @@
 import type { Stats } from 'fs'
 import { readdir, stat, realpath } from 'fs/promises'
-import { join, extname, basename, dirname, relative } from 'path'
+import { join, extname, basename, dirname, relative, resolve } from 'path'
 import type { ChildProjectScan, JpgPsdPair, PsdEntry } from '@shared/types'
-import { pairKeyOf } from '@shared/pair'
+import { pagePairKeyOf, exactPairPriority } from '@shared/pair'
 
 const MAX_DEPTH = 3
 const IMAGE_EXTS = new Set(['.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp', '.avif', '.jfif'])
@@ -19,7 +19,7 @@ function getStem(filePath: string): string {
  * 两边必须永远走同一个实现，否则"侧栏配好的对"与"对照视图显示的图"会不是同一张）。
  */
 function getStemLookupKey(filePath: string): string {
-  return pairKeyOf(filePath)
+  return pagePairKeyOf(filePath)
 }
 
 function getGroupKey(filePath: string): string {
@@ -37,12 +37,18 @@ function getCreatedTimeMs(stats: Stats): number {
     : stats.ctimeMs
 }
 
-export async function scanChildProject(absFolder: string): Promise<ChildProjectScan> {
+export async function scanChildProject(
+  absFolder: string,
+  excludedDirectories: string[] = []
+): Promise<ChildProjectScan> {
   const jpgPairs: JpgPsdPair[] = []
   const imageFiles: string[] = []
   const txtFiles: string[] = []
   const errors: { path: string; msg: string }[] = []
   const visitedRealpaths = new Set<string>()
+  // 排除目录（2026-10-05 移植 0.4.0）：导出目录（章节导出夹/系列导出夹）不该被当成
+  // "这一话多画了几页"。按解析后的小写路径比较（与全站查找键同口径）。
+  const excluded = new Set(excludedDirectories.map((path) => resolve(path).toLowerCase()))
 
   // 章节根目录**自己**就不在：典型是用户在资源管理器里删掉/改名了整个章节文件夹。
   // 这只探测一次；下面的 walk() 仍会照常把 realpath 失败记进 errors，行为不变 ——
@@ -63,6 +69,8 @@ export async function scanChildProject(absFolder: string): Promise<ChildProjectS
     if (depth > MAX_DEPTH) {
       return
     }
+    // 排除目录：只排除**根下面**的目录（depth > 0），章节根目录自己永不排除。
+    if (depth > 0 && excluded.has(resolve(dirPath).toLowerCase())) return
 
     // Resolve realpath to detect symlink loops
     let resolvedPath: string
@@ -145,6 +153,7 @@ export async function scanChildProject(absFolder: string): Promise<ChildProjectS
         psdEntry = {
           absPath: group.psd,
           mtimeMs: s.mtimeMs,
+          size: s.size,
           ctimeMs: getCreatedTimeMs(s),
           status: 'pending'
         }
@@ -175,6 +184,7 @@ export async function scanChildProject(absFolder: string): Promise<ChildProjectS
           psd: {
             absPath: imagePath,
             mtimeMs: imageStat.mtimeMs,
+            size: imageStat.size,
             ctimeMs: imageStat.mtimeMs,
             status: 'none'
           }
@@ -199,7 +209,15 @@ export async function scanChildProject(absFolder: string): Promise<ChildProjectS
   )
   imageFiles.sort((a, b) => collator.compare(basename(a), basename(b)))
 
-  return { jpgPairs, imageFiles, txtFiles, errors, rootMissing }
+  // 状态（2026-10-05 移植 0.4.0）：`unavailable` 优先于 `partial` —— 目录都不在了，
+  // 报"部分读不到"没有意义。`unstable` 不由本函数给出（那是调度器的权限）。
+  const status: NonNullable<ChildProjectScan['status']> = rootMissing
+    ? 'unavailable'
+    : errors.length > 0
+      ? 'partial'
+      : 'complete'
+
+  return { jpgPairs, imageFiles, txtFiles, errors, rootMissing, status }
 }
 
 function pickMatchingImage(
@@ -211,7 +229,7 @@ function pickMatchingImage(
 
   const psdDir = dirname(psdPath)
   const sorted = [...images].sort(
-    (a, b) => imageRank(rootFolder, psdDir, a) - imageRank(rootFolder, psdDir, b)
+    (a, b) => exactPairPriority(psdPath, a) - exactPairPriority(psdPath, b) || imageRank(rootFolder, psdDir, a) - imageRank(rootFolder, psdDir, b) || a.localeCompare(b)
   )
   return sorted[0]
 }

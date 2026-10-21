@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { Button as UiButton } from '@renderer/components/ui/button'
 // 备份列表的**行渲染唯一出处**（第二十三轮）。
 //
 // 卡片摆「最新 3 条」、弹窗摆「全部」—— 两处是同一份东西，所以只该有一份渲染代码
@@ -53,14 +54,14 @@ function timeText(at: number): string {
       <span class="shrink-0 text-[12px] tabular-nums text-text-tertiary">
         {{ formatMegabytes(item.bytes) }} MB
       </span>
-      <button
+      <UiButton variant="outline" size="sm"
         type="button"
-        class="shrink-0 rounded-badge border border-primary-border bg-primary-soft px-2 py-0.5 text-[12px] text-accent transition-colors hover:bg-primary-soft-hover"
+        class="shrink-0 transition-colors"
         :data-testid="`db-backup-restore-${item.reason}`"
         @click="emit('restore', item)"
       >
         还原标记
-      </button>
+      </UiButton>
     </li>
   </ul>
   <p v-else class="mt-3 text-xs text-text-tertiary" data-testid="db-backup-empty">

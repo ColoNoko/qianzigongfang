@@ -110,6 +110,10 @@ export function modeStatsFromPairs(pairs: JpgPsdPair[]): Record<WorkMode, PsdSta
       } else if (mode === 'typeset' && pair.psd.status === 'done') {
         // 旧数据没有时间戳时，沿用嵌字统计的 mtime 作为回退。
         result.typeset.push({ mtimeMs: pair.psd.mtimeMs, ctimeMs: pair.psd.mtimeMs })
+      } else if (pair.psd.modes?.[mode] === true) {
+        // Older image marks can have a completion flag without a per-mode timestamp.
+        // A metadata-only TXT save triggers a rescan; retain those completed counts.
+        result[mode].push({ mtimeMs: pair.psd.mtimeMs, ctimeMs: pair.psd.mtimeMs })
       }
     }
   }

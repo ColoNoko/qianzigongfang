@@ -75,19 +75,7 @@ function textEffects(style: StandardTextStyle): LayerEffectsInfo | undefined {
   return effects.stroke || effects.dropShadow ? effects : undefined
 }
 
-/**
- * `fontSizePx` 是**像素**，但 ag-psd 写进描述符的 `fontSize` 会被 Photoshop
- * 按**文档分辨率**当"点"来解释 —— 而这份 PSD 的分辨率是 `resolutionPpi`。
- * 所以要按 72/ppi 折算，PS 打开时才会得到与工坊预览**完全一样**的像素大小。
- *
- * （不做这一步就会出现：本地预览 75px、PS 里 18px —— 差 4 倍多。2026-09-23 真机发现。）
- */
-function pxToDescriptorPoints(fontSizePx: number, resolutionPpi: number): number {
-  const ppi = Number.isFinite(resolutionPpi) && resolutionPpi > 0 ? resolutionPpi : 72
-  return (fontSizePx * 72) / ppi
-}
-
-function preparedTextToLayer(prepared: PreparedTextLayer, resolutionPpi: number): Layer {
+function preparedTextToLayer(prepared: PreparedTextLayer): Layer {
   const fill = parseHexColor(prepared.style.fillColor)
   const stroke = parseHexColor(prepared.style.strokeColor)
   const raster = prepared.raster
@@ -101,18 +89,16 @@ function preparedTextToLayer(prepared: PreparedTextLayer, resolutionPpi: number)
     text: {
       text: prepared.text.replace(/\r\n?/g, '\n'),
       transform: [1, 0, 0, 1, prepared.position.x, prepared.position.y],
-      // Keep the original horizontal TySh descriptor. ag-psd 31.x documents
-      // that writing `orientation: 'vertical'` can produce a damaged PSD
-      // because Photoshop's second EngineData block is not fully supported.
-      // Vertical requests still use the vertical raster preview, while the
-      // native layer stays on the known-good horizontal descriptor.
-      orientation: 'horizontal',
+      // Match TySh and EngineData so Photoshop keeps the requested direction
+      // when rebuilding the editable text instead of the raster preview.
+      orientation: prepared.style.direction,
       antiAlias: 'smooth',
       gridding: 'none',
       shapeType: 'point',
       style: {
         font: { name: prepared.style.font.postScriptName },
-        fontSize: pxToDescriptorPoints(prepared.style.fontSizePx, resolutionPpi),
+        // EngineData uses document pixels, not the points shown in Photoshop UI.
+        fontSize: prepared.style.fontSizePx,
         fauxBold: prepared.style.fauxBold,
         fauxItalic: prepared.style.fauxItalic,
         ligatures: prepared.style.ligatures,
@@ -169,7 +155,7 @@ export function buildLabelPlusPsd(input: BuildLabelPlusPsdInput): Psd {
         opened: true,
         children: input.textLayers
           .filter((layer) => layer.group === group)
-          .map((layer) => preparedTextToLayer(layer, input.resolutionPpi))
+          .map((layer) => preparedTextToLayer(layer))
       })
     }
   } else {
@@ -177,7 +163,7 @@ export function buildLabelPlusPsd(input: BuildLabelPlusPsdInput): Psd {
       displayGroups.push(
         ...input.textLayers
           .filter((layer) => layer.group === group)
-          .map((layer) => preparedTextToLayer(layer, input.resolutionPpi))
+          .map((layer) => preparedTextToLayer(layer))
       )
     }
   }

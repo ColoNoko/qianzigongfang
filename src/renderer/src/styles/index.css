@@ -6,6 +6,10 @@
 @tailwind components;
 @tailwind utilities;
 
+@layer base {
+  *, ::before, ::after { border-color: var(--border); }
+}
+
 html,
 body,
 #app {
@@ -67,6 +71,22 @@ select option:hover {
   background: var(--accent);
   color: var(--text-on-accent);
   font-weight: 700;
+}
+
+/* 输入框里的浅色提示（placeholder）—— 全应用**一处定义**（2026-10-05）。
+ *
+ * 为什么放全局、而不是给每个输入框挂一个 class：全站几十个输入框，逐个挂必然漏，
+ * 漏掉的那个会用浏览器默认的深灰 —— 在夜间主题里比真实值还显眼，反而像"已经填好了"。
+ * 提示色取最轻的一档文字 token（--text-tertiary），昼夜自动对，不引入新颜色。
+ *
+ * ⚠️ 这里只管**颜色**，不管"什么时候显示"：显示与消失是浏览器原生行为 ——
+ * 框里一旦有真实值，提示自动不画。所以它不可能与真实值混淆：真实值住在 DOM 的
+ * value 里，提示住在 placeholder 属性上，是两个不同的东西（不参与 v-model）。
+ * `opacity: 1` 只为抹平 Firefox 给 placeholder 叠的那层默认透明度。 */
+input::placeholder,
+textarea::placeholder {
+  color: var(--text-tertiary);
+  opacity: 1;
 }
 
 /* 页面切换的淡入。
@@ -299,4 +319,51 @@ select option:hover {
  */
 .guide-header-gradient {
   background: linear-gradient(180deg, var(--primary-soft) 0%, transparent 100%);
+}
+
+.settings-desc,
+.settings-hint {
+  overflow-wrap: anywhere;
+}
+
+/* Shared page rhythm: the shell owns the native titlebar inset. */
+.page-layout {
+  width: 100%;
+  max-width: 1488px;
+  margin-inline: auto;
+  padding: 24px 24px 32px;
+}
+.view-heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px 16px;
+  min-height: 56px;
+  margin-bottom: 20px;
+}
+.view-title {
+  margin: 0;
+  font-size: 22px;
+  line-height: 30px;
+  font-weight: 600;
+  letter-spacing: -.02em;
+  color: var(--text-primary);
+}
+.view-description {
+  margin: 4px 0 0;
+  font-size: 14px;
+  line-height: 22px;
+  color: var(--text-secondary);
+}
+@media (max-width: 800px) {
+  .page-layout { padding: 20px 16px 28px; }
+}
+
+/* Selected segments retain the user's theme hue in dark mode. */
+:root[data-theme="dark"] [data-segment-item][data-state="on"],
+.dark [data-segment-item][data-state="on"],
+:root[data-theme="dark"] [role="tab"][data-state="active"] {
+  background: color-mix(in srgb, var(--accent) 80%, var(--bg-raised)) !important;
+  color: var(--text-on-accent) !important;
 }

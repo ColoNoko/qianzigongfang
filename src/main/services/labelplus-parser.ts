@@ -1,3 +1,4 @@
+import { readTranslationCredits } from '../../shared/translation-credits'
 import { readFile, stat } from 'node:fs/promises'
 import { extname } from 'node:path'
 import type {
@@ -14,6 +15,45 @@ const MAX_LABEL_COUNT = 250_000
 // LabelPlus exporters used six. Accept any run of six or more delimiters.
 const FILE_HEADER = /^\s*>{6,}\[(.*)\]<{6,}\s*$/
 const LABEL_HEADER = /^\s*-{6,}\[(.*?)\]-{6,}\[([^\]]+)\]\s*$/
+
+/**
+ * 认"图片标题行"，取出图名（已去首尾空白）；认不出返回 `null`。
+ *
+ * ⚠️ **写回服务靠这两个 helper 定位"要改哪一行"，别在别处再抄一份正则**
+ * （§13 第 21 条：同一条规则只允许一处实现）。
+ */
+export function matchLabelPlusFileHeader(line: string): string | null {
+  const match = FILE_HEADER.exec(line)
+  return match ? (match[1] ?? '').trim() : null
+}
+
+/** 认"标签头"，取出序号与坐标串。序号认不出时为 `0`（调用方回退成"第几条"）。 */
+export function matchLabelPlusLabelHeader(line: string): { index: number; values: string } | null {
+  const match = LABEL_HEADER.exec(line)
+  if (!match) return null
+  return { index: Number.parseInt(match[1], 10) || 0, values: match[2] }
+}
+
+/**
+ * 一条译文在**文件里**占哪几行（1 基，针对**规范化后**的文本：去 BOM、CRLF/CR 统一成 LF）。
+ *
+ * · `headerLine`       —— 标签头那一行
+ * · `contentStartLine` —— 文本内容区第一行（**只算有内容的行**；空译文时为 `0`）
+ * · `contentEndLine`   —— 文本内容区最后一行（同上）
+ *
+ * 首尾的**空行不算内容区**：真实文件里它是条目之间的分隔，回写时原样留着。
+ * 中间的**空行算内容**（多段译文不能被切掉）。
+ *
+ * 为什么需要它：P2 的写回是**原地改行**，只替换被改条目所占的这几行，
+ * 文件其余字节原样搬运 —— 所以必须知道"改哪一行"，而不是从模型重新拼一份文件。
+ */
+export interface LabelPlusTextSpan {
+  imageName: string
+  labelIndex: number
+  headerLine: number
+  contentStartLine: number
+  contentEndLine: number
+}
 
 export class LabelPlusParseError extends Error {
   readonly line?: number
@@ -100,7 +140,9 @@ function parseJsonDocument(content: string, sourcePath: string): LabelPlusDocume
 
   const record = raw as Record<string, unknown>
   const groups = Array.isArray(record.groups)
-    ? record.groups.filter((value): value is string => typeof value === 'string').map((value) => value.trim())
+    ? record.groups
+        .filter((value): value is string => typeof value === 'string')
+        .map((value) => value.trim())
     : []
   const imagesRecord = record.images
   if (!imagesRecord || typeof imagesRecord !== 'object' || Array.isArray(imagesRecord)) {
@@ -153,16 +195,38 @@ interface PendingLabel {
   groupIndex: number
   position: NormalizedTextPosition
   lines: string[]
+  /** 内容区第一行（`0` = 这一条还没有非空行，即空译文） */
+  firstContentLine: number
+  /** 内容区最后一行（`0` = 同上） */
+  lastContentLine: number
 }
 
-function parseTextDocument(content: string, sourcePath: string): LabelPlusDocument {
-  const lines = content.replace(/^\uFEFF/, '').replace(/\r\n?/g, '\n').split('\n')
+interface LabelPlusTextParseResult {
+  document: LabelPlusDocument
+  spans: LabelPlusTextSpan[]
+  /**
+   * **头部那张分组表**（两条 `-` 之间）里的名字，按下标即分组编号（第 1 个 = 编号 1）。
+   *
+   * ⚠️ 与 `document.groups` **不是一回事**：后者会被"标签里实际用到的分组名"追加
+   * （认不出编号时还会补一个 `分组 N` 回退名）。写回服务**只认这一份** —— 否则
+   * 用 `document.groups` 反查编号，遇到 `分组 5` 这类回退名会算出错误的编号。
+   */
+  headerGroups: string[]
+}
+
+function parseTextDocumentWithSpans(content: string, sourcePath: string): LabelPlusTextParseResult {
+  const lines = content
+    .replace(/^\uFEFF/, '')
+    .replace(/\r\n?/g, '\n')
+    .split('\n')
   const firstFileLine = lines.findIndex((line) => FILE_HEADER.test(line))
   if (firstFileLine < 0) throw new LabelPlusParseError('没有找到图片标题行')
 
   const headerLines = lines.slice(0, firstFileLine)
   const versionLine = headerLines.find((line) => /^\s*\d+\s*,\s*\d+\s*$/.test(line))
-  const versionParts = versionLine?.split(',').map((part) => Number.parseInt(part.trim(), 10)) ?? [1, 0]
+  const versionParts = versionLine?.split(',').map((part) => Number.parseInt(part.trim(), 10)) ?? [
+    1, 0
+  ]
   const separators = headerLines
     .map((line, index) => (line.trim() === '-' ? index : -1))
     .filter((index) => index >= 0)
@@ -171,8 +235,12 @@ function parseTextDocument(content: string, sourcePath: string): LabelPlusDocume
     for (const line of headerLines.slice(separators[0] + 1, separators[1])) addUnique(groups, line)
   }
   if (groups.length === 0) groups.push('默认')
+  // 头部那张表的**快照**：下面的循环会把"标签里实际用到的分组名"也追加进 groups，
+  // 之后就没法从 groups 反推编号了（遇到 `分组 N` 回退名会算错，见 headerGroups 注释）。
+  const headerGroups = [...groups]
 
   const images: LabelPlusImageEntry[] = []
+  const spans: LabelPlusTextSpan[] = []
   const imageByName = new Map<string, LabelPlusImageEntry>()
   let currentImage: LabelPlusImageEntry | null = null
   let pending: PendingLabel | null = null
@@ -183,11 +251,20 @@ function parseTextDocument(content: string, sourcePath: string): LabelPlusDocume
     const fallbackGroup = `分组 ${pending.groupIndex}`
     const group = groups[pending.groupIndex - 1] || fallbackGroup
     addUnique(groups, group)
+    const resolvedIndex = pending.index > 0 ? pending.index : currentImage.labels.length + 1
     currentImage.labels.push({
-      index: pending.index > 0 ? pending.index : currentImage.labels.length + 1,
+      index: resolvedIndex,
       group,
       text: pending.lines.join('\n').trim(),
       position: pending.position
+    })
+    // 行号区间与"这条译文"一一对应（同一个 resolvedIndex），写回服务据此原地改行。
+    spans.push({
+      imageName: currentImage.fileName,
+      labelIndex: resolvedIndex,
+      headerLine: pending.line,
+      contentStartLine: pending.firstContentLine,
+      contentEndLine: pending.lastContentLine
     })
     totalLabels += 1
     if (totalLabels > MAX_LABEL_COUNT) {
@@ -198,10 +275,10 @@ function parseTextDocument(content: string, sourcePath: string): LabelPlusDocume
 
   for (let index = firstFileLine; index < lines.length; index += 1) {
     const line = lines[index]
-    const fileMatch = line.match(FILE_HEADER)
-    if (fileMatch) {
+    const fileMatch = matchLabelPlusFileHeader(line)
+    if (fileMatch !== null) {
       flushPending()
-      const fileName = fileMatch[1].trim()
+      const fileName = fileMatch
       if (!fileName) throw new LabelPlusParseError('图片文件名为空', index + 1)
       currentImage = imageByName.get(fileName) ?? { fileName, labels: [] }
       if (!imageByName.has(fileName)) {
@@ -214,11 +291,11 @@ function parseTextDocument(content: string, sourcePath: string): LabelPlusDocume
       continue
     }
 
-    const labelMatch = line.match(LABEL_HEADER)
+    const labelMatch = matchLabelPlusLabelHeader(line)
     if (labelMatch) {
       if (!currentImage) throw new LabelPlusParseError('标签出现在图片标题之前', index + 1)
       flushPending()
-      const values = labelMatch[2].split(',').map((value) => value.trim())
+      const values = labelMatch.values.split(',').map((value) => value.trim())
       if (values.length < 3) throw new LabelPlusParseError('标签坐标格式错误', index + 1)
       const groupIndex = Number.parseInt(values[2], 10)
       if (!Number.isInteger(groupIndex) || groupIndex <= 0) {
@@ -226,15 +303,25 @@ function parseTextDocument(content: string, sourcePath: string): LabelPlusDocume
       }
       pending = {
         line: index + 1,
-        index: Number.parseInt(labelMatch[1], 10) || currentImage.labels.length + 1,
+        index: labelMatch.index || currentImage.labels.length + 1,
         groupIndex,
         position: normalizedPosition(values[0], values[1], `第 ${index + 1} 行标签`),
-        lines: []
+        lines: [],
+        firstContentLine: 0,
+        lastContentLine: 0
       }
       continue
     }
 
-    if (pending) pending.lines.push(line)
+    if (pending) {
+      pending.lines.push(line)
+      // 只把**非空行**记进内容区：首尾的空行是条目之间的分隔，回写时要原样留着；
+      // 中间的空行天然落在 first..last 之内，所以不必特判。
+      if (line.trim() !== '') {
+        if (pending.firstContentLine === 0) pending.firstContentLine = index + 1
+        pending.lastContentLine = index + 1
+      }
+    }
   }
   flushPending()
 
@@ -242,20 +329,45 @@ function parseTextDocument(content: string, sourcePath: string): LabelPlusDocume
   assertDocumentLimits(images)
 
   return {
-    sourcePath,
-    version: {
-      first: Number.isFinite(versionParts[0]) ? versionParts[0] : 1,
-      last: Number.isFinite(versionParts[1]) ? versionParts[1] : 0
+    document: {
+      credits: readTranslationCredits(content),
+      sourcePath,
+      version: {
+        first: Number.isFinite(versionParts[0]) ? versionParts[0] : 1,
+        last: Number.isFinite(versionParts[1]) ? versionParts[1] : 0
+      },
+      groups,
+      images,
+      warnings: documentWarnings(images)
     },
-    groups,
-    images,
-    warnings: documentWarnings(images)
+    spans,
+    headerGroups
   }
+}
+
+/** 只读解析（既有内部入口：签名与行为都不变，只是把 spans / headerGroups 丢掉）。 */
+function parseTextDocument(content: string, sourcePath: string): LabelPlusDocument {
+  return parseTextDocumentWithSpans(content, sourcePath).document
+}
+
+/**
+ * 解析文本，并**顺带报出每一条所占的行号区间**（P2 写回的"原地改行"要用）。
+ *
+ * 与只读那条路**共用同一个扫描器** —— 绝不另写一份"找标签头"的实现：
+ * 两处对"哪一行是标签头"的判断一旦分叉，回写就会改错行。
+ */
+export function parseLabelPlusTextWithSpans(
+  content: string,
+  sourcePath = ''
+): LabelPlusTextParseResult {
+  const normalized = content.replace(/^\uFEFF/, '').replace(/\r\n?/g, '\n')
+  return parseTextDocumentWithSpans(normalized, sourcePath)
 }
 
 export function parseLabelPlusContent(content: string, sourcePath = ''): LabelPlusDocument {
   const normalized = content.replace(/^\uFEFF/, '')
-  const useJson = extname(sourcePath).toLocaleLowerCase() === '.json' || normalized.trimStart().startsWith('{')
+  const useJson =
+    extname(sourcePath).toLocaleLowerCase() === '.json' || normalized.trimStart().startsWith('{')
   return useJson
     ? parseJsonDocument(normalized, sourcePath)
     : parseTextDocument(normalized, sourcePath)

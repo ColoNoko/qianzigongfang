@@ -1,5 +1,5 @@
 import { DatabaseSync } from 'node:sqlite'
-import { createEmptyModeStatus, normalizeModeStatus, normalizeModeTimestamps } from '@shared/modes'
+import { storedModeStatus, WORK_MODES, normalizeModeTimestamps } from '@shared/modes'
 import type { MarkSnapshot } from '@shared/mark-audit'
 import { getDatabase } from './connection'
 
@@ -20,20 +20,12 @@ import { getDatabase } from './connection'
 function snapshotFileFromRow(row: {
   path: string
   mtime_ms: number
+  updated_at: number
   status: string
   mode_statuses_json: string | null
   mode_timestamps_json: string | null
 }): MarkSnapshot['children'][string]['files'][string] {
-  let modes = createEmptyModeStatus()
-  if (row.mode_statuses_json) {
-    try {
-      modes = normalizeModeStatus(JSON.parse(row.mode_statuses_json))
-    } catch {
-      // 损坏的 JSON 回退为空状态。
-    }
-  } else {
-    modes.typeset = row.status === 'done'
-  }
+  const modes = storedModeStatus(row.mode_statuses_json, row.status)
   let timestamps: MarkSnapshot['children'][string]['files'][string]['timestamps'] = {}
   if (row.mode_timestamps_json) {
     try {
@@ -43,6 +35,9 @@ function snapshotFileFromRow(row: {
     } catch {
       // 同上。
     }
+  }
+  for (const mode of WORK_MODES) {
+    if (modes[mode] && !timestamps[mode]) timestamps[mode] = row.updated_at
   }
   return { path: row.path, mtimeMs: row.mtime_ms, modes, timestamps }
 }
@@ -54,7 +49,7 @@ function readMarkSnapshot(database: DatabaseSync): MarkSnapshot {
   const files = database
     .prepare(
       `
-      SELECT child_id, path_key, path, status, mtime_ms, mode_statuses_json, mode_timestamps_json
+      SELECT child_id, path_key, path, status, mtime_ms, updated_at, mode_statuses_json, mode_timestamps_json
       FROM project_memory_files
     `
     )
@@ -64,6 +59,7 @@ function readMarkSnapshot(database: DatabaseSync): MarkSnapshot {
     path: string
     status: string
     mtime_ms: number
+    updated_at: number
     mode_statuses_json: string | null
     mode_timestamps_json: string | null
   }>

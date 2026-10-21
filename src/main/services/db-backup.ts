@@ -1,3 +1,4 @@
+import { restoreStatisticsTimes } from './db/statistics-time-store'
 /**
  * db-backup —— 数据库备份与"从备份还原标记"。
  *
@@ -20,20 +21,33 @@ import { app } from 'electron'
 import { createHash } from 'node:crypto'
 import { mkdir, readdir, readFile, stat, unlink, writeFile } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import type { DbBackupInfo, MarkRestorePreview } from '@shared/ipc-api'
 import { describeMarkEntry, diffMarkSnapshots, type MarkAuditEntry } from '@shared/mark-audit'
-import {
-  currentMarkSnapshot,
-  readMarkSnapshotFromFile,
-  writeDatabaseSnapshotTo
-} from './database'
+import { currentMarkSnapshot, readMarkSnapshotFromFile, writeDatabaseSnapshotTo } from './database'
 
 /** 每隔多久算"该自动备份了"（同一次运行里只判断一次）。 */
 export const AUTO_BACKUP_INTERVAL_MS = 12 * 60 * 60 * 1000
 /** 最多留几份（大约每份 3 MB，20 份 ≈ 60 MB —— 对磁盘无压力，但足够找回几天前）。 */
 export const KEEP_BACKUPS = 20
+
+// Reference counts protect a selected restore source across concurrent backup creation.
+const pinnedBackups = new Map<string, number>()
+export async function withPinnedDatabaseBackup<T>(
+  file: string,
+  action: () => Promise<T>
+): Promise<T> {
+  const key = resolve(file)
+  pinnedBackups.set(key, (pinnedBackups.get(key) ?? 0) + 1)
+  try {
+    return await action()
+  } finally {
+    const remaining = (pinnedBackups.get(key) ?? 1) - 1
+    if (remaining) pinnedBackups.set(key, remaining)
+    else pinnedBackups.delete(key)
+  }
+}
 
 export function backupsDirectory(): string {
   return join(app.getPath('userData'), 'backups')
@@ -45,7 +59,7 @@ export function backupsDirectory(): string {
  * 到秒是不够的 —— 测试里连着建 21 份就会同名，而同名会让 `VACUUM INTO` 直接失败
  * （它不允许覆盖已有文件）。真人不会在同一毫秒点两次「立即备份」，但"同一秒"完全可能。
  */
-function stamp(at: number): string {
+export function stamp(at: number): string {
   const date = new Date(at)
   const pad = (value: number, width = 2): string => String(value).padStart(width, '0')
   return (
@@ -93,14 +107,12 @@ function countRowsIn(file: string): Record<string, number> {
 }
 
 async function sha256Of(file: string): Promise<string> {
-  return createHash('sha256').update(await readFile(file)).digest('hex')
+  return createHash('sha256')
+    .update(await readFile(file))
+    .digest('hex')
 }
 
-async function describeBackup(
-  file: string,
-  reason: string,
-  at: number
-): Promise<DbBackupInfo> {
+async function describeBackup(file: string, reason: string, at: number): Promise<DbBackupInfo> {
   const stats = await stat(file)
   return {
     file: basenameOf(file),
@@ -149,10 +161,14 @@ async function pruneBackups(): Promise<string[]> {
   }
   described.sort((a, b) => b.mtimeMs - a.mtimeMs)
   const removed: string[] = []
-  for (const item of described.slice(KEEP_BACKUPS)) {
+  let remaining = described.length
+  for (const item of [...described].reverse()) {
+    if (remaining <= KEEP_BACKUPS) break
+    if (pinnedBackups.has(resolve(item.path))) continue
     await unlink(item.path)
     await unlink(sidecarPath(item.path)).catch(() => undefined)
     removed.push(basenameOf(item.path))
+    remaining--
   }
   return removed
 }
@@ -249,6 +265,7 @@ export async function previewMarkRestore(file: string): Promise<MarkRestorePrevi
     file: basenameOf(file),
     at: info?.at ?? Date.now(),
     changingFiles: diff.changingFiles,
+    statisticsTimeChanges: await restoreStatisticsTimes(file),
     missingInBackup: diff.missingInBackup,
     missingInCurrent: diff.missingInCurrent,
     children: diff.children.map((child) => ({

@@ -47,31 +47,10 @@ function mountSidebar(parents: ParentProject[] = makeParents()) {
   })
 }
 
-/** Expand the first parent and click the first child row (sorted desc → c2). */
-async function selectFirstChild(wrapper: ReturnType<typeof mountSidebar>): Promise<void> {
-  // Scope queries to the ProjectTree child component, and address the child
-  // container by `data-testid` — `bg-card-bg` used to be the anchor, but the
-  // sidebar root and the (now sticky) parent row both carry that class too.
-  const tree = wrapper.findComponent(ProjectTree)
-  // Expand first parent.
-  await tree.findAll('.font-bold')[0].trigger('click')
-  // Click first child row in the expanded block.
-  const childBlock = tree.get('[data-testid="child-list"]')
-  const childRows = childBlock.findAll('div.cursor-pointer')
-  await childRows[0].trigger('click')
-}
-
 describe('ProjectSidebar', () => {
-  it('renders action buttons (添加/修改/删除/管理) and ProjectTree', () => {
+  it('shows add and batch management', () => {
     const wrapper = mountSidebar()
-    const buttons = wrapper.find('[data-testid="sidebar-actions"]').findAll('button')
-    expect(buttons).toHaveLength(4)
-    expect(buttons[0].text()).toBe('添加')
-    expect(buttons[1].text()).toBe('修改')
-    expect(buttons[2].text()).toBe('删除')
-    expect(buttons[3].text()).toBe('管理')
-    // ProjectTree is rendered (parent title visible).
-    expect(wrapper.html()).toContain('ドラゴンボール')
+    expect(wrapper.find('[data-testid="sidebar-actions"]').findAll('button').map(b => b.text())).toEqual(['添加', '批量管理'])
   })
 
   it('click 添加 emits add', async () => {
@@ -81,116 +60,49 @@ describe('ProjectSidebar', () => {
     expect(wrapper.emitted('add')!.length).toBe(1)
   })
 
-  it('多选模式的「取消」排在同一行最右端（与正常模式的「管理」同一个角落）', async () => {
-    const wrapper = mountSidebar()
-
-    // 正常模式：「管理」必须是那一行最后一个按钮。
-    const normalButtons = wrapper.find('[data-testid="sidebar-actions"]').findAll('button')
-    expect(normalButtons[normalButtons.length - 1].attributes('data-testid')).toBe(
-      'multi-select-button'
-    )
-    expect(normalButtons[normalButtons.length - 1].text()).toBe('管理')
-
-    await wrapper.get('[data-testid="multi-select-button"]').trigger('click')
-
-    const buttons = wrapper.find('[data-testid="sidebar-actions"]').findAll('button')
-    const cancel = buttons[buttons.length - 1]
-    expect(cancel.attributes('data-testid')).toBe('multi-select-button')
-    expect(cancel.text()).toBe('取消')
-    // 靠自动外边距顶到右端 —— 宽度不够换行时它也仍在自己那一行的右边，
-    // 而不是像 flex-1 那样把批量按钮一起拉变形。
-    expect(cancel.classes()).toContain('ml-auto')
-    // 批量按钮依旧在左边，顺序没变。
-    expect(buttons.map((button) => button.attributes('data-testid'))).toEqual([
-      'batch-done-button',
-      'batch-pending-button',
-      'batch-delete-button',
-      'multi-select-button'
-    ])
-  })
-
-  it('select a child → 修改/删除 enabled; 修改 emits manage; 删除 confirms and emits delete', async () => {
+  it('chapter context actions work without first selecting the chapter', async () => {
     window.confirm = vi.fn(() => true)
     const wrapper = mountSidebar()
-
-    // Before selection: 修改/删除 disabled.
-    const actionButtons = wrapper.find('[data-testid="sidebar-actions"]').findAll('button')
-    const manageBtn = actionButtons[1]
-    const deleteBtn = actionButtons[2]
-    expect(manageBtn.attributes('disabled')).toBeDefined()
-    expect(deleteBtn.attributes('disabled')).toBeDefined()
-
-    // Select first child (c1 — sorted by natural chapter order).
-    await selectFirstChild(wrapper)
-
-    // select re-emitted upward.
-    expect(wrapper.emitted('select')).toBeTruthy()
-    expect(wrapper.emitted('select')![0]).toEqual(['p1', 'c1'])
-
-    // After selection: buttons enabled.
-    expect(manageBtn.attributes('disabled')).toBeUndefined()
-    expect(deleteBtn.attributes('disabled')).toBeUndefined()
-
-    // Click 修改 → emits manage with childId.
-    await manageBtn.trigger('click')
-    expect(wrapper.emitted('manage')).toBeTruthy()
-    expect(wrapper.emitted('manage')![0]).toEqual(['c1'])
-
-    // Click 删除 → confirm dialog shown, emits delete with parentId + childId.
-    await deleteBtn.trigger('click')
-    expect(window.confirm).toHaveBeenCalledWith('确定要删除该项目吗？')
-    expect(wrapper.emitted('delete')).toBeTruthy()
-    expect(wrapper.emitted('delete')![0]).toEqual(['p1', 'c1'])
+    const tree = wrapper.findComponent(ProjectTree)
+    tree.vm.$emit('manageChild', 'c2')
+    expect(wrapper.emitted('manage')?.[0]).toEqual(['c2'])
+    tree.vm.$emit('deleteChild', 'p1', 'c2')
+    await Promise.resolve()
+    expect(wrapper.emitted('delete')?.[0]).toEqual(['p1', 'c2'])
   })
-
-  it('click 删除 with confirm=false does NOT emit delete', async () => {
+  it('cancelled removal does not emit delete', async () => {
     window.confirm = vi.fn(() => false)
     const wrapper = mountSidebar()
-
-    await selectFirstChild(wrapper)
-    const deleteBtn = wrapper.find('[data-testid="sidebar-actions"]').findAll('button')[2]
-    await deleteBtn.trigger('click')
-
-    expect(window.confirm).toHaveBeenCalledWith('确定要删除该项目吗？')
+    wrapper.findComponent(ProjectTree).vm.$emit('deleteChild', 'p1', 'c1')
+    await Promise.resolve()
     expect(wrapper.emitted('delete')).toBeFalsy()
   })
-
-  it('passes parent rename events through', async () => {
+  it('passes parent rename events through', () => {
     const wrapper = mountSidebar()
-    await wrapper.get('[data-testid="multi-select-button"]').trigger('click')
-    const tree = wrapper.findComponent(ProjectTree)
-    const manageButton = tree.findAll('button').find((button) => button.text() === '重命名')
-    expect(manageButton).toBeTruthy()
-
-    await manageButton!.trigger('click')
-    const input = tree.find('input[data-parent-edit-id="p1"]')
-    await input.setValue('新漫画')
-    await input.trigger('keydown.enter')
-
-    expect(wrapper.emitted('renameParent')![0]).toEqual(['p1', '新漫画'])
+    wrapper.findComponent(ProjectTree).vm.$emit('renameParent', 'p1', '新漫画')
+    expect(wrapper.emitted('renameParent')?.[0]).toEqual(['p1', '新漫画'])
   })
-
   it('multi-select marks a child, exposes batch actions, and ESC exits', async () => {
     const wrapper = mountSidebar()
     const tree = wrapper.findComponent(ProjectTree)
     await tree.findAll('.font-bold')[0].trigger('click')
     await wrapper.get('[data-testid="multi-select-button"]').trigger('click')
 
-    expect(wrapper.get('[data-testid="multi-select-button"]').text()).toBe('取消')
+    expect(wrapper.get('[data-testid="multi-select-button"]').text()).toBe('退出管理')
     const childRows = tree.get('[data-testid="child-list"]').findAll('div.cursor-pointer')
     await childRows[0].trigger('click')
 
     expect(childRows[0].classes()).toContain('bg-selected-bg')
-    expect(wrapper.get('[data-testid="multi-select-button"]').text()).toBe('取消')
+    expect(wrapper.get('[data-testid="multi-select-button"]').text()).toBe('退出管理')
     expect(wrapper.find('[data-testid="batch-done-button"]').exists()).toBe(true)
     await wrapper.get('[data-testid="batch-done-button"]').trigger('click')
     expect(wrapper.emitted('batchMark')![0]).toEqual([['c1'], 'done'])
-    expect(wrapper.get('[data-testid="multi-select-button"]').text()).toBe('取消')
+    expect(wrapper.get('[data-testid="multi-select-button"]').text()).toBe('退出管理')
     expect(childRows[0].classes()).not.toContain('bg-selected-bg')
 
     window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))
     await wrapper.vm.$nextTick()
-    expect(wrapper.get('[data-testid="multi-select-button"]').text()).toBe('管理')
+    expect(wrapper.get('[data-testid="multi-select-button"]').text()).toBe('批量管理')
     expect(childRows[0].classes()).not.toContain('bg-selected-bg')
   })
 
@@ -204,7 +116,7 @@ describe('ProjectSidebar', () => {
     expect(parentRow.classes()).toContain('bg-selected-bg')
     await wrapper.get('[data-testid="batch-pending-button"]').trigger('click')
     expect(wrapper.emitted('batchMark')![0]).toEqual([['c1', 'c2'], 'pending'])
-    expect(wrapper.get('[data-testid="multi-select-button"]').text()).toBe('取消')
+    expect(wrapper.get('[data-testid="multi-select-button"]').text()).toBe('退出管理')
     expect(parentRow.classes()).not.toContain('bg-selected-bg')
   })
 
@@ -226,6 +138,14 @@ describe('ProjectSidebar', () => {
     // 再点一次是"取消勾选"，不该再刷一条提示
     await wrapper.findComponent(ProjectTree).findAll('.font-bold')[0].trigger('click')
     expect(toast.toasts).toHaveLength(1)
+  })
+
+  it('「扫描目录」从树里转发到宿主（宿主负责开弹窗）', async () => {
+    const wrapper = mountSidebar()
+    await wrapper.get('[data-testid="multi-select-button"]').trigger('click')
+
+    wrapper.findComponent(ProjectTree).vm.$emit('editSourceRoot', 'p1')
+    expect(wrapper.emitted('editSourceRoot')?.[0]).toEqual(['p1'])
   })
 
   it('空父级（没有子项目）点下去不报「全部 0 话」', async () => {
@@ -264,8 +184,8 @@ describe('ProjectSidebar', () => {
     })
     await wrapper.get('[data-testid="multi-select-button"]').trigger('click')
 
-    expect(wrapper.get('[data-testid="batch-done-button"]').text()).toBe('已翻全部')
-    expect(wrapper.get('[data-testid="batch-pending-button"]').text()).toBe('未翻全部')
+    expect(wrapper.get('[data-testid="batch-done-button"]').text()).toBe('标记已翻译')
+    expect(wrapper.get('[data-testid="batch-pending-button"]').text()).toBe('取消标记')
 
     // The mode travels as a prop, not as part of the event — the payload keeps
     // its historical 'done' | 'pending' shape.
@@ -274,11 +194,11 @@ describe('ProjectSidebar', () => {
     expect(wrapper.emitted('batchMark')![0]).toEqual([['c1', 'c2'], 'done'])
   })
 
-  it('batch buttons use the single-character wording for every mode', async () => {
+  it('batch buttons use the current system mode wording for every mode', async () => {
     const cases: Array<[WorkMode, string, string]> = [
-      ['typeset', '已嵌全部', '未嵌全部'],
-      ['proofread', '已校全部', '未校全部'],
-      ['supervised', '已监全部', '未监全部']
+      ['typeset', '标记已嵌字', '取消标记'],
+      ['proofread', '标记已校对', '取消标记'],
+      ['supervised', '标记已监修', '取消标记']
     ]
     for (const [mode, doneLabel, pendingLabel] of cases) {
       const wrapper = mount(ProjectSidebar, {
@@ -304,4 +224,26 @@ describe('ProjectSidebar', () => {
     // 截图脚本要能在注入的页面里直接拿到滚动口（工具栏在它外面）
     expect(wrapper.find('[data-testid="tree-scroll"]').exists()).toBe(true)
   })
+})
+
+// Confirmation UI is covered separately; preserve these business decision tests.
+vi.mock('@renderer/services/confirm', () => ({ confirmAction: (message: string) => Promise.resolve(window.confirm(message)) }))
+
+it('selects a Shift range and Ctrl+A only within the current manga', async () => {
+  const parents = makeParents()
+  parents[0].children.push({...parents[0].children[0],id:'c3',chapterNumber:'3',folderPath:'/tmp/3'})
+  parents.push({...parents[0],id:'p2',title:'Other',children:[{...parents[0].children[0],id:'other'}]})
+  const wrapper = mountSidebar(parents)
+  await wrapper.get('[data-testid="multi-select-button"]').trigger('click')
+  const tree = wrapper.findComponent(ProjectTree)
+  tree.vm.$emit('toggleChildMark','c1',new MouseEvent('click'))
+  tree.vm.$emit('toggleChildMark','c3',new MouseEvent('click',{shiftKey:true}))
+  await wrapper.vm.$nextTick()
+  expect([...(tree.props('markedChildIds') ?? [])].sort()).toEqual(['c1','c2','c3'])
+  tree.vm.$emit('toggleChildMark','c2',new MouseEvent('click'))
+  await wrapper.vm.$nextTick()
+  document.body.dispatchEvent(new KeyboardEvent('keydown',{key:'a',ctrlKey:true,bubbles:true}))
+  await wrapper.vm.$nextTick()
+  expect([...(tree.props('markedChildIds') ?? [])].sort()).toEqual(['c1','c2','c3'])
+  wrapper.unmount()
 })

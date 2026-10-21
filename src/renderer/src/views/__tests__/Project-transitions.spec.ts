@@ -11,12 +11,12 @@ import type { ParentProject } from '@shared/types'
 // so the component's watch(() => route.params.childId, ...) actually fires
 // when we mutate params in test 3.
 const { mockRoute } = vi.hoisted(() => ({
-  mockRoute: { current: null as null | { params: { parentTitle: string; childId: string } } }
+  mockRoute: { current: null as null | { params: { parentTitle: string; childId: string }; query: Record<string, string> } }
 }))
 
 vi.mock('vue-router', async () => {
   const { reactive } = await import('vue')
-  mockRoute.current = reactive({ params: { parentTitle: '', childId: '' } })
+  mockRoute.current = reactive({ params: { parentTitle: '', childId: '' }, query: {} })
   return {
     useRoute: () => mockRoute.current,
     useRouter: () => ({ push: vi.fn() })

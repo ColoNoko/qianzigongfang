@@ -1,0 +1,215 @@
+[
+  {
+    "name": "input",
+    "url": "https://www.shadcn-vue.com/r/styles/new-york/input.json",
+    "sha256": "961ed41f57fa5c8917a6e11f28178a5f211957f44b4ddb3d9b6380c7d5946ecf",
+    "dependencies": [
+      "@vueuse/core"
+    ]
+  },
+  {
+    "name": "button",
+    "url": "https://www.shadcn-vue.com/r/styles/new-york/button.json",
+    "sha256": "2e5a22131a44fb303968c6c95f5eb3ab41ae67e7e8653fa05aad53363ac79fe1",
+    "dependencies": [
+      "reka-ui"
+    ]
+  },
+  {
+    "name": "checkbox",
+    "url": "https://www.shadcn-vue.com/r/styles/new-york/checkbox.json",
+    "sha256": "c4387510d3a55f18a526359a6dda947dcad7babc229bc0713c5d49042b9e116a",
+    "dependencies": [
+      "reka-ui",
+      "@vueuse/core"
+    ]
+  },
+  {
+    "name": "slider",
+    "url": "https://www.shadcn-vue.com/r/styles/new-york/slider.json",
+    "sha256": "26a8eb3e39ee31601b8e716ce90c177cf4c588bdce495510cba3d0ffad39051e",
+    "dependencies": [
+      "reka-ui",
+      "@vueuse/core"
+    ]
+  },
+  {
+    "name": "radio-group",
+    "url": "https://www.shadcn-vue.com/r/styles/new-york/radio-group.json",
+    "sha256": "44de23024f28a6a934bd4a0d826aa263e06e8d5b68c429e87d3eacbf867ae58f",
+    "dependencies": [
+      "reka-ui",
+      "@vueuse/core"
+    ]
+  },
+  {
+    "name": "switch",
+    "url": "https://www.shadcn-vue.com/r/styles/new-york/switch.json",
+    "sha256": "50f7f3c5c94984a11c05b5a407d6ded528034acf8c9baca1ce58b78f8916ebc5",
+    "dependencies": [
+      "reka-ui",
+      "@vueuse/core"
+    ]
+  },
+  {
+    "name": "popover",
+    "url": "https://www.shadcn-vue.com/r/styles/new-york/popover.json",
+    "sha256": "d74d6e567ef38984611a3e31e36f388b6094c8242822c53549269a0191a72853",
+    "dependencies": [
+      "reka-ui",
+      "@vueuse/core"
+    ]
+  },
+  {
+    "name": "select",
+    "url": "https://www.shadcn-vue.com/r/styles/new-york/select.json",
+    "sha256": "d826d6a46a097c398a8cdcad9b829c4dfa0ae9892459cf61ff19d7d293381dfc",
+    "dependencies": [
+      "reka-ui",
+      "@vueuse/core"
+    ]
+  },
+  {
+    "name": "tooltip",
+    "url": "https://www.shadcn-vue.com/r/styles/new-york/tooltip.json",
+    "sha256": "6729c058318b1975e90da8ce2ebc9f53ec32b358bca6d5d2f20b4afbc39bf662",
+    "dependencies": [
+      "reka-ui",
+      "@vueuse/core"
+    ]
+  },
+  {
+    "name": "sheet",
+    "url": "https://www.shadcn-vue.com/r/styles/new-york/sheet.json",
+    "sha256": "a04d7e6f7119c3e3355f7eead5e1cf5930670fca907a5023324a641ae5b4b5a2",
+    "dependencies": [
+      "reka-ui",
+      "@vueuse/core"
+    ]
+  },
+  {
+    "name": "toggle-group",
+    "url": "https://www.shadcn-vue.com/r/styles/new-york/toggle-group.json",
+    "sha256": "3524568bd54cec3dc8fefea8d506b010b42d4edbceff1e3a1608e12e01b84eb4",
+    "dependencies": [
+      "reka-ui",
+      "@vueuse/core"
+    ]
+  },
+  {
+    "name": "dialog",
+    "url": "https://www.shadcn-vue.com/r/styles/new-york/dialog.json",
+    "sha256": "fd690d76f1a246e7406a9047e34dcd2c677061be4c1f4bea2f1e86bab76f2b9b",
+    "dependencies": [
+      "reka-ui",
+      "@vueuse/core"
+    ]
+  },
+  {
+    "name": "toggle",
+    "url": "https://www.shadcn-vue.com/r/styles/new-york/toggle.json",
+    "sha256": "c5efc464173e3589a71233c3c9fc4439227e6db720fd1346927b1055be3789d3",
+    "dependencies": [
+      "reka-ui",
+      "@vueuse/core"
+    ]
+  },
+  {
+    "name": "table",
+    "url": "https://www.shadcn-vue.com/r/styles/new-york/table.json",
+    "sha256": "9496728843a8fc9e40facc42a3d4554f70e654a79ea5934604a7f17e800501f9",
+    "dependencies": [
+      "@vueuse/core"
+    ]
+  },
+  {
+    "name": "card",
+    "url": "https://www.shadcn-vue.com/r/styles/new-york/card.json",
+    "sha256": "3fff95ce62a0b155fb8d6289f45caac4e06dd92d43eadb529b831256fb11aa4a",
+    "dependencies": []
+  },
+  {
+    "name": "badge",
+    "url": "https://www.shadcn-vue.com/r/styles/new-york/badge.json",
+    "sha256": "6c642a5eae9ea216d1d3635c9ad03da4de57d886e7141e6af842f1f61d26c149",
+    "dependencies": []
+  },
+  {
+    "name": "progress",
+    "url": "https://www.shadcn-vue.com/r/styles/new-york/progress.json",
+    "sha256": "b9f01af6cf590366b5718bab1f7589bedf0d173307b8ddca18b9f113913794c0",
+    "dependencies": [
+      "reka-ui",
+      "@vueuse/core"
+    ]
+  },
+  {
+    "name": "skeleton",
+    "url": "https://www.shadcn-vue.com/r/styles/new-york/skeleton.json",
+    "sha256": "3e7ebec7a4be0abe982453856b26f5a152c7233eb4ba1e72fa3f1de3983b93b9",
+    "dependencies": []
+  },
+  {
+    "name": "resizable",
+    "url": "https://www.shadcn-vue.com/r/styles/new-york/resizable.json",
+    "sha256": "bffacceba8715c03b98a9174ab4416bc0c9cc5145890fdf4702f9c0cf8ebc4b3",
+    "dependencies": [
+      "reka-ui",
+      "@vueuse/core"
+    ]
+  },
+  {
+    "name": "tabs",
+    "url": "https://www.shadcn-vue.com/r/styles/new-york/tabs.json",
+    "sha256": "0e59f3d192938f8329de03261f8e2a637760bd7c9de99ad08eec4e98ed09179c",
+    "dependencies": [
+      "reka-ui",
+      "@vueuse/core"
+    ]
+  },
+  {
+    "name": "label",
+    "url": "https://www.shadcn-vue.com/r/styles/new-york/label.json",
+    "sha256": "1807baac5ad8fa66ad141739101839110b4fd05f1dde92c80dbde59d73022be1",
+    "dependencies": [
+      "reka-ui",
+      "@vueuse/core"
+    ]
+  },
+  {
+    "name": "separator",
+    "url": "https://www.shadcn-vue.com/r/styles/new-york/separator.json",
+    "sha256": "79b9e200a64c4512a0b95b6bc2e00f6b0fa9c6966ae987753ca43eb62f3d0c41",
+    "dependencies": [
+      "reka-ui",
+      "@vueuse/core"
+    ]
+  },
+  {
+    "name": "sonner",
+    "url": "https://www.shadcn-vue.com/r/styles/new-york/sonner.json",
+    "sha256": "9f6ac051d3e3e58aff0da891a49f51ad0dca0cb84fa77ccb8b17fc8f64dfabdb",
+    "dependencies": [
+      "vue-sonner",
+      "@vueuse/core"
+    ]
+  },
+  {
+    "name": "command",
+    "url": "https://www.shadcn-vue.com/r/styles/new-york/command.json",
+    "sha256": "5ed22380767a07994435c22eb4fa963ae416a72a4800bd0fb2bef775c64ae230",
+    "dependencies": [
+      "reka-ui",
+      "@vueuse/core"
+    ]
+  },
+  {
+    "name": "alert-dialog",
+    "url": "https://www.shadcn-vue.com/r/styles/new-york/alert-dialog.json",
+    "sha256": "06d5eac2bb0c893f9942bb72fdb986a6eb1e8270a3b081ce428638e91593b8fa",
+    "dependencies": [
+      "reka-ui",
+      "@vueuse/core"
+    ]
+  }
+]

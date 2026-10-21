@@ -1,21 +1,52 @@
 <script setup lang="ts">
+import { ToggleGroup, ToggleGroupItem } from '@renderer/components/ui/toggle-group'
+import { confirmAction } from '@renderer/services/confirm'
+
+import { Button as UiButton } from '@renderer/components/ui/button'
+import UiInput from '@renderer/components/ui/ControlInput.vue'
+import { useFontVirtualList } from '@renderer/features/fonts/useFontVirtualList'
+import { useFontSelection } from '@renderer/features/fonts/useFontSelection'
+import InfoHint from '../components/InfoHint.vue'
+import { FONT_IDENTIFY_SITE } from '@shared/external-url'
+import { fontCatalog } from '../fonts/catalog'
+import { FontPreviewLoader } from '../fonts/preview-loader'
+import GlyphSample from '../features/fonts/GlyphSample.vue'
+import { fontFaceCss } from '@shared/font-style'
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import type { FontLanguage, FontSource, SystemFontInfo } from '@shared/ipc-api'
 import { useToastStore } from '../stores/toast'
-import { FONT_IDENTIFY_SITE } from '@shared/external-url'
 import AppSelect, { type AppSelectOption } from '../components/AppSelect.vue'
 
 type SourceFilter = 'all' | FontSource
 type LanguageFilter = 'all' | FontLanguage
 type CardSize = 'large' | 'medium' | 'small'
-type LoadBatch = 50 | 100 | 'all'
+type ManagementMode = 'system' | 'folder'
 type PreviewWeight = 'auto' | 100 | 200 | 300 | 400 | 500 | 600 | 700 | 800 | 900
 
-const DEFAULT_PREVIEW = '汉化工坊 字体预览 123 ABC'
+interface FontCardOptions {
+  previewText: string
+  previewSize: number
+  previewWeight: PreviewWeight
+  forceBold: boolean
+  forceItalic: boolean
+  verticalPreview: boolean
+  cardSize: CardSize
+}
+
+const DEFAULT_PREVIEW = '嵌字工坊 字体预览 123 ABC'
 const AUTO_REFRESH_INTERVAL = 5 * 60 * 1000
+const FONT_CARD_OPTIONS_STORAGE_KEY = 'ui.fontManagerCardOptions'
 const toast = useToastStore()
 
+const managementMode = ref<ManagementMode | null>(null)
+const folderPath = ref('')
 const fonts = ref<SystemFontInfo[]>([])
+watch(fontCatalog().fonts, (value) => {
+  if (managementMode.value === 'system' && !loading.value) {
+    clearFolderPreviewFonts()
+    fonts.value = value
+  }
+})
 const supported = ref(true)
 const loading = ref(false)
 const installing = ref(false)
@@ -29,17 +60,40 @@ const forceBold = ref(false)
 const forceItalic = ref(false)
 const verticalPreview = ref(false)
 const cardSize = ref<CardSize>('large')
-const loadBatch = ref<LoadBatch>(50)
 const sourceFilter = ref<SourceFilter>('all')
 const languageFilter = ref<LanguageFilter>('all')
-const visibleLimit = ref(50)
-const selectionMode = ref(false)
-const selectedFontIds = ref<string[]>([])
+const {
+  selectionMode,
+  selectedFontIds,
+  comparingSelected,
+  isSelected,
+  toggleSelection,
+  enterSelectionMode,
+  exitSelectionMode,
+  clearSelection,
+  selectAllFiltered,
+  compareSelectedFonts
+} = useFontSelection(
+  computed(() => filteredFonts.value),
+  isRemovable,
+  resetVisibleLimit
+)
 const refreshQueued = ref(false)
 const refreshQueuedNotify = ref(false)
-const fontListRevision = ref(0)
+const cardOptionsLoaded = ref(false)
 let refreshTimer: number | undefined
+let requestGeneration = 0
+let disposed = false
+const previewStatus = ref<Record<string, string>>({})
+const previews = new FontPreviewLoader((id, status) => {
+  previewStatus.value[id] = status
+})
 
+const { listElement, scrollTop, columns, rowHeight, startRow, virtualEnd, virtualFonts } =
+  useFontVirtualList(
+    cardSize,
+    computed(() => visibleFonts.value)
+  )
 const languageFilteredFonts = computed(() => {
   const language = languageFilter.value
   return language === 'all'
@@ -48,7 +102,7 @@ const languageFilteredFonts = computed(() => {
 })
 
 const sourceCounts = computed(() => {
-  const counts: Record<FontSource, number> = { system: 0, user: 0, managed: 0 }
+  const counts: Record<FontSource, number> = { system: 0, user: 0, managed: 0, folder: 0 }
   for (const font of languageFilteredFonts.value) counts[font.source] += 1
   return counts
 })
@@ -78,12 +132,6 @@ const languageOptions = computed<AppSelectOption[]>(() => [
   { value: 'other', label: `其他字体 (${languageCounts.value.other})` }
 ])
 
-const loadBatchOptions: AppSelectOption[] = [
-  { value: 50, label: '50' },
-  { value: 100, label: '100' },
-  { value: 'all', label: '全部' }
-]
-
 const previewWeightOptions: AppSelectOption[] = [
   { value: 'auto', label: '字体默认' },
   ...[100, 200, 300, 400, 500, 600, 700, 800, 900].map((weight) => ({
@@ -93,6 +141,10 @@ const previewWeightOptions: AppSelectOption[] = [
 ]
 
 const filteredFonts = computed(() => {
+  if (selectionMode.value && comparingSelected.value) {
+    const selected = new Set(selectedFontIds.value)
+    return fonts.value.filter((font) => selected.has(font.id))
+  }
   const needle = query.value.trim().toLocaleLowerCase()
   return languageFilteredFonts.value.filter((font) => {
     if (sourceFilter.value !== 'all' && font.source !== sourceFilter.value) return false
@@ -104,30 +156,73 @@ const filteredFonts = computed(() => {
   })
 })
 
-const visibleFonts = computed(() => {
-  if (loadBatch.value === 'all') return filteredFonts.value
-  return filteredFonts.value.slice(0, visibleLimit.value)
-})
-
-const removableFilteredFonts = computed(() =>
-  filteredFonts.value.filter((font) => isRemovable(font))
-)
+const visibleFonts = computed(() => filteredFonts.value)
 
 const selectedFonts = computed(() => {
   const selected = new Set(selectedFontIds.value)
-  return fonts.value.filter((font) => selected.has(font.id) && isRemovable(font))
+  return fonts.value.filter((font) => selected.has(font.id))
 })
 
-const gridClass = computed(() => {
-  if (cardSize.value === 'small') return 'grid-cols-4'
-  if (cardSize.value === 'medium') return 'grid-cols-3'
-  return 'grid-cols-2'
+const selectedRemovableFonts = computed(() => selectedFonts.value.filter(isRemovable))
+
+watch([query, sourceFilter, languageFilter, cardSize], () => {
+  resetVisibleLimit()
 })
 
-watch([query, sourceFilter, languageFilter, loadBatch], resetVisibleLimit)
+watch(
+  [previewText, previewSize, previewWeight, forceBold, forceItalic, verticalPreview, cardSize],
+  () => {
+    if (!cardOptionsLoaded.value || typeof window.comicType?.storeSet !== 'function') return
+    const options: FontCardOptions = {
+      previewText: previewText.value,
+      previewSize: previewSize.value,
+      previewWeight: previewWeight.value,
+      forceBold: forceBold.value,
+      forceItalic: forceItalic.value,
+      verticalPreview: verticalPreview.value,
+      cardSize: cardSize.value
+    }
+    void window.comicType.storeSet(FONT_CARD_OPTIONS_STORAGE_KEY, options).catch(() => undefined)
+  }
+)
+
+function normalizePreviewWeight(value: unknown): PreviewWeight {
+  if (value === 'auto') return 'auto'
+  const number = Number(value)
+  return [100, 200, 300, 400, 500, 600, 700, 800, 900].includes(number)
+    ? (number as Exclude<PreviewWeight, 'auto'>)
+    : 'auto'
+}
+
+async function loadCardOptions(): Promise<void> {
+  if (typeof window.comicType?.storeGet !== 'function') {
+    cardOptionsLoaded.value = true
+    return
+  }
+  try {
+    const value = await window.comicType.storeGet(FONT_CARD_OPTIONS_STORAGE_KEY)
+    const record = value && typeof value === 'object' ? (value as Record<string, unknown>) : {}
+    previewText.value =
+      typeof record.previewText === 'string' && record.previewText.trim()
+        ? Array.from(record.previewText).slice(0, 120).join('')
+        : DEFAULT_PREVIEW
+    previewSize.value = Math.min(96, Math.max(12, Number(record.previewSize) || 34))
+    previewWeight.value = normalizePreviewWeight(record.previewWeight)
+    forceBold.value = record.forceBold === true
+    forceItalic.value = record.forceItalic === true
+    verticalPreview.value = record.verticalPreview === true
+    cardSize.value =
+      record.cardSize === 'medium' || record.cardSize === 'small' ? record.cardSize : 'large'
+  } catch {
+    // Invalid or unavailable persisted UI preferences fall back to the defaults above.
+  } finally {
+    cardOptionsLoaded.value = true
+  }
+}
 
 function resetVisibleLimit(): void {
-  visibleLimit.value = loadBatch.value === 'all' ? Number.MAX_SAFE_INTEGER : loadBatch.value
+  scrollTop.value = 0
+  if (listElement.value) listElement.value.scrollTop = 0
 }
 
 function onLanguageFilterChange(nextValue: string | number): void {
@@ -146,11 +241,6 @@ function onLanguageFilterChange(nextValue: string | number): void {
     : 'all'
   sourceFilter.value = 'all'
   resetVisibleLimit()
-  fontListRevision.value += 1
-}
-
-function onLoadBatchChange(value: string | number): void {
-  loadBatch.value = value === 'all' ? 'all' : Number(value) === 100 ? 100 : 50
 }
 
 function onPreviewWeightChange(value: string | number): void {
@@ -159,6 +249,7 @@ function onPreviewWeightChange(value: string | number): void {
 }
 
 function formatSource(source: FontSource): string {
+  if (source === 'folder') return '独立文件夹'
   if (source === 'managed') return '本应用'
   if (source === 'user') return '用户字体'
   return '系统字体'
@@ -178,6 +269,7 @@ function languageSummary(languages: FontLanguage[]): string {
 }
 
 function sourceClass(source: FontSource): string {
+  if (source === 'folder') return 'bg-info text-info-fg'
   if (source === 'managed') return 'bg-success text-success-fg'
   if (source === 'user') return 'bg-warning text-warning-fg'
   return 'bg-text-secondary text-app-bg'
@@ -188,20 +280,14 @@ function isRemovable(font: SystemFontInfo): boolean {
 }
 
 function fontFamily(font: SystemFontInfo): string {
-  const safeFamily = font.family.replace(/["\\]/g, '')
-  return `"${safeFamily}", "Microsoft YaHei UI", sans-serif`
+  return `"${previews.family(font)}", sans-serif`
 }
-
+function clearFolderPreviewFonts(): void {
+  previews.clear()
+  previewStatus.value = {}
+}
 function nativeFontWeight(font: SystemFontInfo): number {
-  const style = font.style.toLocaleLowerCase()
-  if (style.includes('black') || style.includes('heavy')) return 900
-  if (style.includes('extra bold') || style.includes('extrabold')) return 800
-  if (style.includes('bold')) return 700
-  if (style.includes('semi bold') || style.includes('semibold')) return 600
-  if (style.includes('medium')) return 500
-  if (style.includes('light')) return 300
-  if (style.includes('thin')) return 200
-  return 400
+  return Number(fontFaceCss({ font, fauxBold: false, fauxItalic: false }).weight)
 }
 
 function effectiveFontWeight(font: SystemFontInfo): number {
@@ -211,9 +297,20 @@ function effectiveFontWeight(font: SystemFontInfo): number {
 }
 
 function effectiveFontStyle(font: SystemFontInfo): 'normal' | 'italic' {
-  return forceItalic.value || /italic|oblique/i.test(font.style) ? 'italic' : 'normal'
+  return forceItalic.value || (font.italic ?? /italic|oblique/i.test(font.style))
+    ? 'italic'
+    : 'normal'
 }
 
+function missingGlyphs(font: SystemFontInfo): number {
+  const ranges = previews.coverage.get(font.id)
+  if (!ranges || previewStatus.value[font.id]) return 0
+  return [...new Set(Array.from(previewText.value || DEFAULT_PREVIEW))].filter(
+    (char) =>
+      !/\s/u.test(char) &&
+      !ranges.some(([a, b]) => char.codePointAt(0)! >= a && char.codePointAt(0)! <= b)
+  ).length
+}
 function effectivePreviewSize(): number {
   const scale = cardSize.value === 'large' ? 1 : cardSize.value === 'medium' ? 0.82 : 0.66
   return Math.max(12, Math.min(72, Math.round(previewSize.value * scale)))
@@ -231,45 +328,8 @@ function previewAreaClass(): string {
   return 'mt-4 py-3'
 }
 
-function isSelected(fontId: string): boolean {
-  return selectedFontIds.value.includes(fontId)
-}
-
-function toggleSelection(font: SystemFontInfo): void {
-  if (!selectionMode.value || !isRemovable(font)) return
-  selectedFontIds.value = isSelected(font.id)
-    ? selectedFontIds.value.filter((id) => id !== font.id)
-    : [...selectedFontIds.value, font.id]
-}
-
-/**
- * 「识字网」—— 认不出的字体拿去外面识别 / 下载（用系统默认浏览器打开）。
- *
- * 只放行 http / https，规则在主进程侧（`shared/external-url.ts`，纯函数有单测）。
- * 打不开时给一条提示，**不要静默什么都没发生** —— 用户点了没反应会以为程序坏了。
- */
-async function openFontIdentifySite(): Promise<void> {
-  const result = await window.comicType.openExternal(FONT_IDENTIFY_SITE)
-  if (!result.ok) {
-    toast.addToast({ type: 'warning', message: `没能打开浏览器：${result.message}` })
-  }
-}
-
-function enterSelectionMode(): void {
-  selectionMode.value = true
-  selectedFontIds.value = []
-}
-
-function exitSelectionMode(): void {
-  selectionMode.value = false
-  selectedFontIds.value = []
-}
-
-function selectAllFiltered(): void {
-  selectedFontIds.value = removableFilteredFonts.value.map((font) => font.id)
-}
-
-async function refreshFonts(silent = false, notify = false): Promise<void> {
+async function refreshFonts(silent = false, notify = false, chooseFolder = false): Promise<void> {
+  if (!managementMode.value) return
   if (loading.value) {
     if (!silent) {
       refreshQueued.value = true
@@ -278,16 +338,27 @@ async function refreshFonts(silent = false, notify = false): Promise<void> {
     return
   }
   loading.value = true
+  const generation = ++requestGeneration
+  const mode = managementMode.value
   try {
-    const result = await window.comicType.fontList()
+    const result =
+      mode === 'folder'
+        ? await window.comicType.fontListFolder(
+            chooseFolder ? undefined : folderPath.value || undefined
+          )
+        : await fontCatalog().load(notify)
+    if (disposed || generation !== requestGeneration || mode !== managementMode.value) return
+    if ('canceled' in result && result.canceled) return
+    if ('folderPath' in result && typeof result.folderPath === 'string') {
+      folderPath.value = result.folderPath
+    }
+    clearFolderPreviewFonts()
     supported.value = result.supported
     fonts.value = result.fonts
-    const availableIds = new Set(
-      result.fonts.filter((font) => isRemovable(font)).map((font) => font.id)
-    )
+    const availableIds = new Set(result.fonts.map((font) => font.id))
     selectedFontIds.value = selectedFontIds.value.filter((id) => availableIds.has(id))
+    if (selectedFontIds.value.length === 0) comparingSelected.value = false
     resetVisibleLimit()
-    fontListRevision.value += 1
     if (!result.supported && result.message && !silent) {
       toast.addToast({ type: 'warning', message: result.message })
     } else if (notify) {
@@ -297,21 +368,54 @@ async function refreshFonts(silent = false, notify = false): Promise<void> {
       })
     }
   } catch (error) {
-    if (!silent) {
+    if (!silent && !disposed && generation === requestGeneration) {
       toast.addToast({
         type: 'error',
         message: `读取字体失败：${error instanceof Error ? error.message : String(error)}`
       })
     }
   } finally {
-    loading.value = false
-    if (refreshQueued.value) {
-      const queuedNotify = refreshQueuedNotify.value
-      refreshQueued.value = false
-      refreshQueuedNotify.value = false
-      void refreshFonts(false, queuedNotify)
+    if (!disposed && generation === requestGeneration) {
+      loading.value = false
+      if (refreshQueued.value) {
+        const queuedNotify = refreshQueuedNotify.value
+        refreshQueued.value = false
+        refreshQueuedNotify.value = false
+        void refreshFonts(false, queuedNotify)
+      }
     }
   }
+}
+
+async function chooseManagementMode(mode: ManagementMode): Promise<void> {
+  managementMode.value = mode
+  query.value = ''
+  languageFilter.value = 'all'
+  exitSelectionMode()
+  sourceFilter.value = 'all'
+  if (mode === 'system') {
+    folderPath.value = ''
+    clearFolderPreviewFonts()
+  }
+  await refreshFonts(false)
+  if (mode === 'folder' && !folderPath.value && fonts.value.length === 0)
+    managementMode.value = null
+}
+
+async function chooseAnotherFolder(): Promise<void> {
+  await refreshFonts(false, false, true)
+}
+
+function returnToModeSelection(): void {
+  requestGeneration++
+  loading.value = false
+  refreshQueued.value = false
+  refreshQueuedNotify.value = false
+  managementMode.value = null
+  fonts.value = []
+  folderPath.value = ''
+  exitSelectionMode()
+  clearFolderPreviewFonts()
 }
 
 function refreshFromButton(): void {
@@ -352,7 +456,11 @@ async function installFonts(): Promise<void> {
 
 async function uninstallFont(font: SystemFontInfo): Promise<void> {
   if (!isRemovable(font) || activeUninstallId.value || batchUninstalling.value) return
-  if (!window.confirm(`确定卸载“${font.displayName}”吗？\n字体文件将从当前用户字体库中删除。`)) {
+  if (
+    !(await confirmAction(
+      `确定卸载“${font.displayName}”吗？\n字体文件将从当前用户字体库中删除；TTC 集合内的所有字体将一并卸载。`
+    ))
+  ) {
     return
   }
 
@@ -376,14 +484,17 @@ async function uninstallFont(font: SystemFontInfo): Promise<void> {
 }
 
 async function uninstallSelectedFonts(): Promise<void> {
-  if (selectedFonts.value.length === 0 || batchUninstalling.value) return
-  const count = selectedFonts.value.length
-  if (!window.confirm(`确定卸载选中的 ${count} 个用户字体吗？\n系统字体不会被修改。`)) return
+  if (selectedRemovableFonts.value.length === 0 || batchUninstalling.value) return
+  const selectedFonts = [...selectedRemovableFonts.value]
+  const count = new Set(
+    selectedFonts.map((font) => font.fileId || font.id.split(':')[0])
+  ).size
+  if (!await confirmAction(`确定卸载选中的 ${count} 个用户字体吗？\n系统字体不会被修改。`)) return
 
   batchUninstalling.value = true
   try {
     const result = await window.comicType.fontUninstallMany(
-      selectedFonts.value.map((font) => font.id)
+      selectedFonts.map((font) => font.id)
     )
     if (result.succeeded.length > 0) {
       toast.addToast({ type: 'success', message: `已卸载 ${result.succeeded.length} 个字体` })
@@ -396,7 +507,9 @@ async function uninstallSelectedFonts(): Promise<void> {
           .join('；')}`
       })
     }
-    selectedFontIds.value = []
+    const removed = new Set(result.succeeded)
+    selectedFontIds.value = selectedFontIds.value.filter((id) => !removed.has(id.split(':')[0]))
+    if (selectedFontIds.value.length === 0) comparingSelected.value = false
     await refreshFonts(true)
   } catch (error) {
     toast.addToast({
@@ -408,8 +521,11 @@ async function uninstallSelectedFonts(): Promise<void> {
   }
 }
 
-function loadMore(): void {
-  if (loadBatch.value !== 'all') visibleLimit.value += loadBatch.value
+async function openFontIdentifySite(): Promise<void> {
+  const result = await window.comicType.openExternal(FONT_IDENTIFY_SITE)
+  if (!result.ok) {
+    toast.addToast({ type: 'warning', message: `没能打开浏览器：${result.message}` })
+  }
 }
 
 function stopAutoRefresh(): void {
@@ -432,26 +548,51 @@ function handleVisibilityChange(): void {
   }
 }
 
-onMounted(() => {
+onMounted(async () => {
+  await loadCardOptions()
+  if (disposed) return
   resetVisibleLimit()
-  void refreshFonts()
   document.addEventListener('visibilitychange', handleVisibilityChange)
   startAutoRefresh()
 })
 
 onUnmounted(() => {
+  disposed = true
+  requestGeneration++
   document.removeEventListener('visibilitychange', handleVisibilityChange)
   stopAutoRefresh()
+  clearFolderPreviewFonts()
 })
+
+watch(
+  [virtualFonts, previewText, previewWeight, forceBold, forceItalic, verticalPreview],
+  ([visible]) => {
+    previews.show(visible, (previewText.value || DEFAULT_PREVIEW) === DEFAULT_PREVIEW && previewWeight.value === 'auto' && !forceBold.value && !forceItalic.value && !verticalPreview.value)
+  },
+  { flush: 'post' }
+)
 </script>
 
 <template>
-  <div class="page-in flex h-full min-h-0 flex-col bg-app-bg p-6 text-text-primary">
-    <header class="mb-4 flex shrink-0 flex-wrap items-start justify-between gap-4">
+  <div class="page-in page-layout flex h-full min-h-0 flex-col bg-app-bg text-text-primary">
+    <header
+      v-if="managementMode"
+      class="view-heading shrink-0"
+    >
       <div>
-        <h1 class="text-xl font-semibold tracking-tight">字体管理</h1>
-        <p class="mt-1 text-sm text-text-secondary">
-          浏览和预览 Windows 字体。系统字体受保护，只允许卸载用户字体。
+        <div class="flex items-center gap-1">
+          <h1 class="view-title">字体管理</h1>
+          <InfoHint label="字体管理说明"
+            ><template v-if="managementMode === 'system'"
+              >浏览和预览 Windows 字体。系统字体受保护，只允许卸载用户字体。</template
+            ><template v-else>递归浏览独立文件夹中的字体，无需安装即可预览。</template></InfoHint
+          >
+        </div>
+        <p
+          v-if="managementMode === 'folder'"
+          class="mt-1 max-w-xl break-all text-xs text-text-secondary"
+        >
+          {{ folderPath }}
         </p>
       </div>
       <div class="ml-auto flex flex-wrap items-center justify-end gap-2">
@@ -465,401 +606,572 @@ onUnmounted(() => {
             @update:model-value="onLanguageFilterChange"
           />
         </label>
-        <label class="flex items-center gap-2 text-xs text-text-secondary">
-          <span>每批加载</span>
-          <AppSelect
-            class="w-20"
-            :model-value="loadBatch"
-            :options="loadBatchOptions"
-            test-id="font-load-batch"
-            @update:model-value="onLoadBatchChange"
-          />
-        </label>
-        <button
+        <UiButton variant="outline" size="sm"
+          v-if="managementMode === 'folder'"
           type="button"
-          class="rounded-md border border-border bg-card-bg px-4 py-2 text-sm text-text-primary transition-colors hover:bg-card-bg-hover disabled:cursor-not-allowed disabled:opacity-40"
+          class="transition-colors"
+          data-testid="font-choose-another-folder"
+          @click="chooseAnotherFolder"
+        >
+          更换文件夹
+        </UiButton>
+        <UiButton variant="outline" size="sm"
+          type="button"
+          class="transition-colors disabled:cursor-not-allowed disabled:opacity-50"
           data-testid="font-refresh"
           @click="refreshFromButton"
         >
           {{ loading ? '读取中…' : '刷新' }}
-        </button>
-        <button
+        </UiButton>
+        <UiButton variant="default" size="sm"
+          v-if="managementMode === 'system'"
           type="button"
-          class="rounded-badge bg-accent px-4 py-2 text-sm text-text-on-accent transition-colors hover:bg-primary-hover active:bg-primary-active disabled:cursor-not-allowed disabled:opacity-40"
+          class="transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
           :disabled="!supported || installing"
           data-testid="font-install"
           @click="installFonts"
         >
           {{ installing ? '安装中…' : '安装字体' }}
-        </button>
+        </UiButton>
+        <UiButton variant="ghost" size="sm"
+          type="button"
+          class=""
+          data-testid="font-back-to-mode"
+          @click="returnToModeSelection"
+        >
+          返回选择
+        </UiButton>
       </div>
     </header>
 
-    <section class="mb-4 shrink-0 rounded-xl border border-border bg-card-bg p-4">
-      <div class="grid grid-cols-[minmax(220px,1fr)_minmax(280px,1.5fr)] gap-3">
-        <label class="block">
-          <span class="mb-1.5 block text-xs text-text-secondary">搜索字体</span>
-          <div class="relative">
+    <header v-else class="view-heading shrink-0">
+      <div>
+      <h1 class="view-title">字体管理</h1>
+      <p class="view-description">请选择这次需要管理的字体来源。</p>
+      </div>
+    </header>
+
+    <section
+      v-if="!managementMode"
+      class="font-mode-picker min-h-0 flex-1 pb-12"
+      data-testid="font-mode-picker"
+    >
+      <div class="font-mode-card-group" data-testid="font-mode-card-group">
+        <UiButton variant="outline" size="sm"
+          type="button"
+          class="group h-auto min-h-52 w-full flex-col items-start whitespace-normal p-6 text-left transition-all duration-200 hover:-translate-y-0.5 [&_svg]:size-6"
+          data-testid="font-mode-system"
+          @click="chooseManagementMode('system')"
+        >
+          <span
+            class="mb-5 flex h-11 w-11 items-center justify-center rounded-xl bg-primary-soft text-accent transition-transform duration-200 group-hover:scale-105"
+            aria-hidden="true"
+          >
             <svg
-              class="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-text-tertiary"
+              class="h-6 w-6"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.8"
+            >
+              <rect x="3" y="3" width="7" height="7" rx="1" />
+              <rect x="14" y="3" width="7" height="7" rx="1" />
+              <rect x="3" y="14" width="7" height="7" rx="1" />
+              <rect x="14" y="14" width="7" height="7" rx="1" />
+            </svg>
+          </span>
+          <span class="text-lg font-bold transition-colors group-hover:text-accent"
+            >管理系统字体</span
+          >
+          <span class="mt-2 block text-sm leading-6 text-text-secondary">
+            扫描 Windows 系统与当前用户字体，可安装、预览和卸载用户字体。
+          </span>
+          <span class="mt-auto pt-5 text-xs font-semibold text-accent">
+            进入管理
+            <span class="ml-1 transition-transform group-hover:translate-x-1" aria-hidden="true"
+              >→</span
+            >
+          </span>
+        </UiButton>
+        <UiButton variant="outline" size="sm"
+          type="button"
+          class="group h-auto min-h-52 w-full flex-col items-start whitespace-normal p-6 text-left transition-all duration-200 hover:-translate-y-0.5 [&_svg]:size-6"
+          data-testid="font-mode-folder"
+          @click="chooseManagementMode('folder')"
+        >
+          <span
+            class="mb-5 flex h-11 w-11 items-center justify-center rounded-xl bg-primary-soft text-accent transition-transform duration-200 group-hover:scale-105"
+            aria-hidden="true"
+          >
+            <svg
+              class="h-6 w-6"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.8"
+            >
+              <path
+                d="M3 7.5a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v8.5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7.5Z"
+              />
+            </svg>
+          </span>
+          <span class="text-lg font-bold transition-colors group-hover:text-accent"
+            >导入独立文件夹</span
+          >
+          <span class="mt-2 block text-sm leading-6 text-text-secondary">
+            选择一个文件夹，递归读取其全部子文件夹中的 TTF、OTF 和 TTC 字体，不安装到系统。
+          </span>
+          <span class="mt-auto pt-5 text-xs font-semibold text-accent">
+            选择文件夹
+            <span class="ml-1 transition-transform group-hover:translate-x-1" aria-hidden="true"
+              >→</span
+            >
+          </span>
+        </UiButton>
+      </div>
+    </section>
+
+    <template v-if="managementMode">
+      <section class="mb-4 shrink-0 rounded-xl border border-border bg-card-bg p-4">
+        <div class="grid grid-cols-[minmax(220px,1fr)_minmax(280px,1.5fr)] gap-3">
+          <label class="block">
+            <span class="mb-1.5 block text-xs text-text-secondary">搜索字体</span>
+            <div class="relative">
+              <svg
+                class="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-text-tertiary"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+              >
+                <circle cx="11" cy="11" r="7" />
+                <path d="m20 20-3.5-3.5" />
+              </svg>
+              <UiInput
+                v-model="query"
+                type="search"
+                placeholder="名称、样式或文件名"
+                class="h-10 w-full rounded-md border border-border bg-app-bg pl-9 pr-3 text-sm outline-none transition-colors placeholder:text-text-tertiary focus:border-accent"
+                data-testid="font-search"
+              />
+            </div>
+          </label>
+
+          <label class="block">
+            <span class="mb-1.5 block text-xs text-text-secondary">预览文字</span>
+            <UiInput
+              v-model="previewText"
+              type="text"
+              class="h-10 w-full rounded-md border border-border bg-app-bg px-3 text-sm outline-none transition-colors focus:border-accent"
+              data-testid="font-preview-input"
+            />
+          </label>
+        </div>
+
+        <div class="mt-3 flex flex-wrap items-center gap-4 border-t border-border pt-3">
+          <div class="flex items-center gap-1">
+            <span class="mr-1 text-xs text-text-secondary">卡片</span>
+            <ToggleGroup type="single" variant="outline" size="sm" :model-value="cardSize" aria-label="卡片大小" @update:model-value="value => { if (value) cardSize = value as CardSize }">
+            <ToggleGroupItem :value="option.value"
+              v-for="option in [
+                { value: 'large', label: '大' },
+                { value: 'medium', label: '中' },
+                { value: 'small', label: '小' }
+              ]"
+              :key="option.value"
+              type="button"
+              class="transition-colors"
+              :data-testid="`font-card-size-${option.value}`"
+            >
+              {{ option.label }}
+            </ToggleGroupItem>
+            </ToggleGroup>
+          </div>
+
+          <label class="flex items-center gap-2 text-xs text-text-secondary">
+            <span>字重</span>
+            <AppSelect
+              class="w-28"
+              size="small"
+              :model-value="previewWeight"
+              :options="previewWeightOptions"
+              test-id="font-preview-weight"
+              @update:model-value="onPreviewWeightChange"
+            />
+          </label>
+
+          <div class="flex items-center gap-1">
+            <UiButton variant="outline" size="sm"
+              type="button"
+              class="min-w-8 transition-colors"
+              :class="
+                forceBold
+                  ? 'border-accent bg-selected-bg text-accent'
+                  : 'border-border bg-app-bg text-text-secondary'
+              "
+              title="粗体预览"
+              data-testid="font-preview-bold"
+              @click="forceBold = !forceBold"
+            >
+              B
+            </UiButton>
+            <UiButton variant="outline" size="sm"
+              type="button"
+              class="min-w-8 italic transition-colors"
+              :class="
+                forceItalic
+                  ? 'border-accent bg-selected-bg text-accent'
+                  : 'border-border bg-app-bg text-text-secondary'
+              "
+              title="斜体预览"
+              data-testid="font-preview-italic"
+              @click="forceItalic = !forceItalic"
+            >
+              I
+            </UiButton>
+            <UiButton variant="outline" size="sm"
+              type="button"
+              class="transition-colors"
+              :class="
+                verticalPreview
+                  ? 'border-accent bg-selected-bg text-accent'
+                  : 'border-border bg-app-bg text-text-secondary'
+              "
+              title="竖排预览"
+              data-testid="font-preview-vertical"
+              @click="verticalPreview = !verticalPreview"
+            >
+              竖排
+            </UiButton>
+          </div>
+
+          <label class="ml-auto flex min-w-60 items-center gap-3 text-xs text-text-secondary">
+            <span class="shrink-0">字号 {{ previewSize }} px</span>
+            <UiInput
+              v-model.number="previewSize"
+              type="range"
+              min="16"
+              max="72"
+              step="2"
+              class="w-full accent-accent"
+              data-testid="font-preview-size"
+            />
+          </label>
+        </div>
+      </section>
+
+      <div class="mb-3 flex shrink-0 flex-wrap items-center justify-between gap-3">
+        <div class="flex flex-wrap items-center gap-2">
+          <ToggleGroup type="single" :model-value="sourceFilter" @update:model-value="value => { if (value) sourceFilter = String(value) as SourceFilter }"
+            v-if="managementMode === 'system'"
+            size="sm" variant="outline"
+          >
+            <ToggleGroupItem :value="filter.value"
+              v-for="filter in [
+                { value: 'all', label: `全部 ${languageFilteredFonts.length}` },
+                { value: 'system', label: `系统 ${sourceCounts.system}` },
+                { value: 'user', label: `用户 ${sourceCounts.user}` },
+                { value: 'managed', label: `本应用 ${sourceCounts.managed}` }
+              ]"
+              :key="filter.value"
+              type="button"
+              class="transition-colors"
+              :data-testid="`font-filter-${filter.value}`"
+            >
+              {{ filter.label }}
+            </ToggleGroupItem>
+          </ToggleGroup>
+
+          <UiButton variant="outline" size="sm"
+            v-if="!selectionMode"
+            type="button"
+            class=""
+            :disabled="fonts.length === 0"
+            data-testid="font-selection-enter"
+            @click="enterSelectionMode"
+          >
+            多选
+          </UiButton>
+
+          <template v-else>
+            <UiButton variant="outline" size="sm"
+              type="button"
+              class=""
+              data-testid="font-selection-all"
+              @click="selectAllFiltered"
+            >
+              全选可卸载字体
+            </UiButton>
+            <UiButton variant="outline" size="sm"
+              type="button"
+              class=""
+              @click="clearSelection"
+            >
+              清空
+            </UiButton>
+
+            <UiButton variant="outline" size="sm"
+              type="button"
+              class="transition-colors disabled:cursor-not-allowed disabled:opacity-50"
+              :class="
+                comparingSelected
+                  ? 'border-accent bg-selected-bg font-semibold text-accent'
+                  : 'border-border bg-card-bg text-text-secondary hover:bg-card-bg-hover'
+              "
+              :disabled="selectedFonts.length === 0"
+              data-testid="font-selection-compare"
+              @click="compareSelectedFonts"
+            >
+              比较所选 ({{ selectedFonts.length }})
+            </UiButton>
+            <UiButton variant="destructive" size="sm"
+              type="button"
+              class="disabled:cursor-not-allowed disabled:opacity-50"
+              :disabled="selectedRemovableFonts.length === 0 || batchUninstalling"
+              data-testid="font-selection-uninstall"
+              @click="uninstallSelectedFonts"
+            >
+              {{ batchUninstalling ? '卸载中…' : `卸载所选 (${selectedRemovableFonts.length})` }}
+            </UiButton>
+            <UiButton variant="ghost" size="sm"
+              type="button"
+              class=""
+              data-testid="font-selection-cancel"
+              @click="exitSelectionMode"
+            >
+              取消多选
+            </UiButton>
+          </template>
+          <!-- 字体识别 / 下载：跳到外面那个站（识字网）。样式与隔壁「多选卸载」同一档，
+             图标复用本页「搜索字体」那个放大镜的 path，保证是同一套图标语言。 -->
+          <UiButton variant="outline" size="sm"
+            type="button"
+            class="flex items-center gap-1.5"
+            title="在浏览器打开识字网：字体识别与字体下载"
+            data-testid="font-identify-site"
+            @click="openFontIdentifySite"
+          >
+            <svg
+              class="h-3.5 w-3.5"
               viewBox="0 0 24 24"
               fill="none"
               stroke="currentColor"
               stroke-width="2"
+              aria-hidden="true"
             >
               <circle cx="11" cy="11" r="7" />
               <path d="m20 20-3.5-3.5" />
             </svg>
-            <input
-              v-model="query"
-              type="search"
-              placeholder="名称、样式或文件名"
-              class="h-10 w-full rounded-md border border-border bg-app-bg pl-9 pr-3 text-sm outline-none transition-colors placeholder:text-text-tertiary focus:border-accent"
-              data-testid="font-search"
-            />
-          </div>
-        </label>
-
-        <label class="block">
-          <span class="mb-1.5 block text-xs text-text-secondary">预览文字</span>
-          <input
-            v-model="previewText"
-            type="text"
-            class="h-10 w-full rounded-md border border-border bg-app-bg px-3 text-sm outline-none transition-colors focus:border-accent"
-            data-testid="font-preview-input"
-          />
-        </label>
-      </div>
-
-      <div class="mt-3 flex flex-wrap items-center gap-4 border-t border-border pt-3">
-        <div class="flex items-center gap-1">
-          <span class="mr-1 text-xs text-text-secondary">卡片</span>
-          <button
-            v-for="option in [
-              { value: 'large', label: '大' },
-              { value: 'medium', label: '中' },
-              { value: 'small', label: '小' }
-            ]"
-            :key="option.value"
-            type="button"
-            class="rounded px-2.5 py-1.5 text-xs transition-colors"
-            :class="
-              cardSize === option.value
-                ? 'bg-accent text-text-on-accent'
-                : 'bg-app-bg text-text-secondary hover:bg-card-bg-hover'
-            "
-            :data-testid="`font-card-size-${option.value}`"
-            @click="cardSize = option.value as CardSize"
-          >
-            {{ option.label }}
-          </button>
+            识字网
+          </UiButton>
         </div>
-
-        <label class="flex items-center gap-2 text-xs text-text-secondary">
-          <span>字重</span>
-          <AppSelect
-            class="w-28"
-            size="small"
-            :model-value="previewWeight"
-            :options="previewWeightOptions"
-            test-id="font-preview-weight"
-            @update:model-value="onPreviewWeightChange"
-          />
-        </label>
-
-        <div class="flex items-center gap-1">
-          <button
-            type="button"
-            class="h-8 min-w-8 rounded border text-sm font-bold transition-colors"
-            :class="
-              forceBold
-                ? 'border-accent bg-selected-bg text-accent'
-                : 'border-border bg-app-bg text-text-secondary'
-            "
-            title="粗体预览"
-            data-testid="font-preview-bold"
-            @click="forceBold = !forceBold"
-          >
-            B
-          </button>
-          <button
-            type="button"
-            class="h-8 min-w-8 rounded border text-sm italic transition-colors"
-            :class="
-              forceItalic
-                ? 'border-accent bg-selected-bg text-accent'
-                : 'border-border bg-app-bg text-text-secondary'
-            "
-            title="斜体预览"
-            data-testid="font-preview-italic"
-            @click="forceItalic = !forceItalic"
-          >
-            I
-          </button>
-          <button
-            type="button"
-            class="h-8 rounded border px-2 text-xs transition-colors"
-            :class="
-              verticalPreview
-                ? 'border-accent bg-selected-bg text-accent'
-                : 'border-border bg-app-bg text-text-secondary'
-            "
-            title="竖排预览"
-            data-testid="font-preview-vertical"
-            @click="verticalPreview = !verticalPreview"
-          >
-            竖排
-          </button>
-        </div>
-
-        <label class="ml-auto flex min-w-60 items-center gap-3 text-xs text-text-secondary">
-          <span class="shrink-0">字号 {{ previewSize }} px</span>
-          <input
-            v-model.number="previewSize"
-            type="range"
-            min="16"
-            max="72"
-            step="2"
-            class="w-full accent-accent"
-            data-testid="font-preview-size"
-          />
-        </label>
+        <span class="text-xs text-text-tertiary"> 共 {{ filteredFonts.length }} 个字体 </span>
       </div>
-    </section>
 
-    <div class="mb-3 flex shrink-0 items-center justify-between gap-3">
-      <div class="flex items-center gap-2">
-        <div class="flex rounded-badge border border-border bg-card-bg p-1 text-sm">
-          <button
-            v-for="filter in [
-              { value: 'all', label: `全部 ${languageFilteredFonts.length}` },
-              { value: 'system', label: `系统 ${sourceCounts.system}` },
-              { value: 'user', label: `用户 ${sourceCounts.user}` },
-              { value: 'managed', label: `本应用 ${sourceCounts.managed}` }
-            ]"
-            :key="filter.value"
-            type="button"
-            class="rounded px-3 py-1.5 transition-colors"
-            :class="
-              sourceFilter === filter.value
-                ? 'bg-accent text-text-on-accent'
-                : 'text-text-secondary hover:bg-card-bg-hover hover:text-text-primary'
-            "
-            :data-testid="`font-filter-${filter.value}`"
-            @click="sourceFilter = filter.value as SourceFilter"
-          >
-            {{ filter.label }}
-          </button>
-        </div>
-
-        <button
-          v-if="!selectionMode"
-          type="button"
-          class="rounded-md border border-border bg-card-bg px-3 py-2 text-xs text-text-secondary hover:bg-card-bg-hover hover:text-text-primary"
-          :disabled="removableFilteredFonts.length === 0"
-          data-testid="font-selection-enter"
-          @click="enterSelectionMode"
-        >
-          多选卸载
-        </button>
-        <template v-else>
-          <button
-            type="button"
-            class="rounded-md border border-border bg-card-bg px-3 py-2 text-xs text-text-secondary hover:bg-card-bg-hover"
-            data-testid="font-selection-all"
-            @click="selectAllFiltered"
-          >
-            全选可卸载字体
-          </button>
-          <button
-            type="button"
-            class="rounded-md border border-border bg-card-bg px-3 py-2 text-xs text-text-secondary hover:bg-card-bg-hover"
-            @click="selectedFontIds = []"
-          >
-            清空
-          </button>
-          <button
-            type="button"
-            class="rounded-md bg-danger px-3 py-2 text-xs text-danger-fg disabled:cursor-not-allowed disabled:opacity-40"
-            :disabled="selectedFonts.length === 0 || batchUninstalling"
-            data-testid="font-selection-uninstall"
-            @click="uninstallSelectedFonts"
-          >
-            {{ batchUninstalling ? '卸载中…' : `卸载所选 (${selectedFonts.length})` }}
-          </button>
-          <button
-            type="button"
-            class="rounded-md px-3 py-2 text-xs text-text-secondary hover:bg-card-bg-hover"
-            data-testid="font-selection-cancel"
-            @click="exitSelectionMode"
-          >
-            取消多选
-          </button>
-        </template>
-
-        <!-- 字体识别 / 下载：跳到外面那个站（识字网）。样式与隔壁「多选卸载」同一档，
-             图标复用本页「搜索字体」那个放大镜的 path，保证是同一套图标语言。 -->
-        <button
-          type="button"
-          class="flex items-center gap-1.5 rounded-md border border-border bg-card-bg px-3 py-2 text-xs text-text-secondary hover:bg-card-bg-hover hover:text-text-primary"
-          title="在浏览器打开识字网：字体识别与字体下载"
-          data-testid="font-identify-site"
-          @click="openFontIdentifySite"
-        >
-          <svg
-            class="h-3.5 w-3.5"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="2"
-            aria-hidden="true"
-          >
-            <circle cx="11" cy="11" r="7" />
-            <path d="m20 20-3.5-3.5" />
-          </svg>
-          识字网
-        </button>
-      </div>
-      <span class="text-xs text-text-tertiary">
-        显示 {{ visibleFonts.length }} / {{ filteredFonts.length }}
-      </span>
-    </div>
-
-    <section
-      v-if="!supported"
-      class="flex min-h-0 flex-1 items-center justify-center rounded-xl border border-dashed border-border bg-card-bg"
-      data-testid="font-unsupported"
-    >
-      <div class="text-center">
-        <div class="text-4xl font-semibold text-text-tertiary">Aa</div>
-        <p class="mt-3 text-sm text-text-secondary">字体管理仅在 Windows 版本中可用</p>
-      </div>
-    </section>
-
-    <section
-      v-else-if="loading && fonts.length === 0"
-      class="flex min-h-0 flex-1 items-center justify-center rounded-xl border border-border bg-card-bg text-sm text-text-secondary"
-    >
-      正在扫描系统字体…
-    </section>
-
-    <section
-      v-else
-      :key="`font-list-${languageFilter}-${fontListRevision}`"
-      class="min-h-0 flex-1 overflow-y-auto rounded-xl border border-border bg-card-bg p-3"
-      data-testid="font-list"
-    >
-      <div
-        v-if="visibleFonts.length === 0"
-        class="flex h-full min-h-52 items-center justify-center text-sm text-text-secondary"
+      <section
+        v-if="!supported"
+        class="flex min-h-0 flex-1 items-center justify-center rounded-xl border border-dashed border-border bg-card-bg"
+        data-testid="font-unsupported"
       >
-        没有找到符合条件的字体
-      </div>
+        <div class="text-center">
+          <div class="text-4xl font-semibold text-text-tertiary">Aa</div>
+          <p class="mt-3 text-sm text-text-secondary">字体管理仅在 Windows 版本中可用</p>
+        </div>
+      </section>
 
-      <div v-else class="grid gap-3" :class="gridClass">
-        <article
-          v-for="font in visibleFonts"
-          :key="font.id"
-          class="flex min-w-0 flex-col rounded-lg border bg-app-bg transition-colors"
-          :class="[
-            cardClass(),
-            isSelected(font.id)
-              ? 'border-accent bg-selected-bg'
-              : 'border-border hover:border-accent/50',
-            selectionMode && isRemovable(font) ? 'cursor-pointer' : ''
-          ]"
-          :data-testid="`font-card-${font.id}`"
-          @click="toggleSelection(font)"
+      <section
+        v-else-if="loading && fonts.length === 0"
+        class="flex min-h-0 flex-1 items-center justify-center rounded-xl border border-border bg-card-bg text-sm text-text-secondary"
+      >
+        正在扫描系统字体…
+      </section>
+
+      <section
+        v-else
+        @scroll="scrollTop = ($event.target as HTMLElement).scrollTop"
+        class="min-h-0 flex-1 overflow-y-auto rounded-xl border border-border bg-card-bg p-3"
+        style="overflow-anchor: none"
+        ref="listElement"
+        data-testid="font-list"
+      >
+        <div
+          v-if="visibleFonts.length === 0"
+          class="flex h-full min-h-52 items-center justify-center text-sm text-text-secondary"
         >
-          <div class="flex items-start justify-between gap-2">
-            <div class="min-w-0">
-              <h2 class="truncate text-sm font-semibold" :title="font.displayName">
-                {{ font.family }}
-              </h2>
-              <p class="mt-0.5 truncate text-[11px] text-text-tertiary">
-                {{ font.style }} · {{ font.format }} · {{ languageSummary(font.languages) }}
-              </p>
-              <p class="truncate text-[10px] text-text-tertiary" :title="font.postScriptName">
-                PS: {{ font.postScriptName }}
-              </p>
-            </div>
-            <button
-              v-if="selectionMode && isRemovable(font)"
-              type="button"
-              class="flex h-5 w-5 shrink-0 items-center justify-center rounded border text-xs"
-              :class="
-                isSelected(font.id)
-                  ? 'border-accent bg-accent text-text-on-accent'
-                  : 'border-border bg-card-bg'
-              "
-              :aria-label="isSelected(font.id) ? '取消选择' : '选择字体'"
-              @click.stop="toggleSelection(font)"
-            >
-              {{ isSelected(font.id) ? '✓' : '' }}
-            </button>
-            <span
-              v-else
-              class="shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold"
-              :class="sourceClass(font.source)"
-            >
-              {{ formatSource(font.source) }}
-            </span>
-          </div>
+          没有找到符合条件的字体
+        </div>
 
-          <div
-            class="flex min-h-0 flex-1 items-center justify-center overflow-hidden border-y border-border leading-tight"
-            :class="previewAreaClass()"
+        <div
+          v-else
+          class="grid gap-3"
+          :style="{
+            gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))`,
+            paddingTop: `${startRow * rowHeight}px`,
+            paddingBottom: `${Math.max(0, Math.ceil((visibleFonts.length - virtualEnd) / columns)) * rowHeight}px`
+          }"
+        >
+          <article
+            v-for="(font, fontIndex) in virtualFonts"
+            :key="font.id"
+            class="font-card-appear flex min-w-0 flex-col rounded-lg border bg-app-bg transition-colors"
+            :class="[
+              cardClass(),
+              isSelected(font.id)
+                ? 'border-accent bg-selected-bg'
+                : 'border-border hover:border-accent/50',
+              selectionMode ? 'cursor-pointer' : ''
+            ]"
+            :style="{ '--font-card-delay': `${Math.min(fontIndex, 16) * 10}ms` }"
+            :data-testid="`font-card-${font.id}`"
+            @click="toggleSelection(font)"
+            :tabindex="selectionMode ? 0 : undefined"
+            :aria-label="font.displayName"
+            @keydown.enter.self.prevent="toggleSelection(font)"
+            @keydown.space.self.prevent="toggleSelection(font)"
           >
-            <div
-              class="max-h-full max-w-full overflow-hidden break-words"
-              :data-testid="`font-preview-sample-${font.id}`"
-              :style="{
-                fontFamily: fontFamily(font),
-                fontSize: `${effectivePreviewSize()}px`,
-                fontWeight: effectiveFontWeight(font),
-                fontStyle: effectiveFontStyle(font),
-                writingMode: verticalPreview ? 'vertical-rl' : 'horizontal-tb',
-                textOrientation: 'mixed'
-              }"
-            >
-              {{ previewText || DEFAULT_PREVIEW }}
+            <div class="flex items-start justify-between gap-2">
+              <div class="min-w-0">
+                <h2 class="truncate text-sm font-semibold" :title="font.displayName">
+                  {{ font.family }}
+                </h2>
+                <p class="mt-0.5 truncate text-[11px] text-text-tertiary">
+                  {{ font.style }} · {{ font.format }} · {{ languageSummary(font.languages) }}
+                </p>
+                <p class="truncate text-[10px] text-text-tertiary" :title="font.postScriptName">
+                  PS: {{ font.postScriptName || '未提供（不可用于 PSD 文字层）' }}
+                </p>
+              </div>
+              <UiButton variant="default" size="sm"
+                v-if="selectionMode"
+                type="button"
+                class="flex w-5 shrink-0 items-center justify-center"
+                :class="
+                  isSelected(font.id)
+                    ? 'border-accent bg-accent text-text-on-accent'
+                    : 'border-border bg-card-bg'
+                "
+                :aria-label="isSelected(font.id) ? '取消选择' : '选择字体'"
+                @click.stop="toggleSelection(font)"
+              >
+                {{ isSelected(font.id) ? '✓' : '' }}
+              </UiButton>
+              <span
+                v-else
+                class="shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold"
+                :class="sourceClass(font.source)"
+              >
+                {{ formatSource(font.source) }}
+              </span>
             </div>
-          </div>
 
-          <div class="mt-2 flex items-center justify-between gap-2">
-            <p class="min-w-0 truncate text-[10px] text-text-tertiary" :title="font.filePath">
-              {{ font.filePath }}
+            <div
+              class="flex min-h-0 flex-1 items-center justify-center overflow-hidden border-y border-border leading-tight"
+              :class="previewAreaClass()"
+            >
+              <span v-if="previewStatus[font.id]" class="text-xs text-text-secondary">{{
+                previewStatus[font.id]
+              }}</span>
+              <GlyphSample v-else-if="previews.glyphs.has(font.id)" :sample="previews.glyphs.get(font.id)!" :size="effectivePreviewSize()" />
+              <div
+                v-else
+                class="max-h-full max-w-full overflow-hidden break-words"
+                :data-testid="`font-preview-sample-${font.id}`"
+                :style="{
+                  fontFamily: fontFamily(font),
+                  fontSize: `${effectivePreviewSize()}px`,
+                  fontWeight: effectiveFontWeight(font),
+                  fontStyle: effectiveFontStyle(font),
+                  writingMode: verticalPreview ? 'vertical-rl' : 'horizontal-tb',
+                  textOrientation: 'mixed'
+                }"
+              >
+                {{ previewText || DEFAULT_PREVIEW }}
+              </div>
+            </div>
+
+            <p v-if="missingGlyphs(font)" class="text-[10px] text-warning">
+              预览含 {{ missingGlyphs(font) }} 个缺失字符{{ previews.glyphs.has(font.id) ? '（字体未包含对应字形）' : '（使用回退字体）' }}
             </p>
-            <button
-              v-if="isRemovable(font) && !selectionMode"
-              type="button"
-              class="shrink-0 rounded px-2 py-1 text-xs text-danger transition-colors hover:bg-danger/10 disabled:opacity-40"
-              :disabled="Boolean(activeUninstallId) || batchUninstalling"
-              :data-testid="`font-uninstall-${font.id}`"
-              @click.stop="uninstallFont(font)"
+            <p
+              v-else-if="
+                effectiveFontWeight(font) !== nativeFontWeight(font) ||
+                (forceItalic && !font.italic)
+              "
+              class="text-[10px] text-text-tertiary"
             >
-              {{ activeUninstallId === font.id ? '卸载中…' : '卸载' }}
-            </button>
-            <span
-              v-else-if="font.source === 'system'"
-              class="shrink-0 text-[10px] text-text-tertiary"
-            >
-              受保护
-            </span>
-          </div>
-        </article>
-      </div>
-
-      <div v-if="visibleFonts.length < filteredFonts.length" class="flex justify-center py-4">
-        <button
-          type="button"
-          class="rounded-md border border-border px-5 py-2 text-sm text-text-secondary hover:bg-card-bg-hover hover:text-text-primary"
-          data-testid="font-load-more"
-          @click="loadMore"
-        >
-          再加载 {{ loadBatch }} 个
-        </button>
-      </div>
-    </section>
+              合成字重 / 斜体预览
+            </p>
+            <div class="mt-2 flex items-center justify-between gap-2">
+              <p class="min-w-0 truncate text-[10px] text-text-tertiary" :title="font.filePath">
+                {{ font.filePath }}
+              </p>
+              <UiButton variant="destructive" size="sm"
+                v-if="isRemovable(font) && !selectionMode"
+                type="button"
+                class="shrink-0 transition-colors disabled:opacity-50"
+                :disabled="Boolean(activeUninstallId) || batchUninstalling"
+                :data-testid="`font-uninstall-${font.id}`"
+                @click.stop="uninstallFont(font)"
+              >
+                {{ activeUninstallId === font.id ? '卸载中…' : '卸载' }}
+              </UiButton>
+              <span
+                v-else-if="font.source === 'system'"
+                class="shrink-0 text-[10px] text-text-tertiary"
+              >
+                受保护
+              </span>
+            </div>
+          </article>
+        </div>
+      </section>
+    </template>
   </div>
 </template>
+
+<style scoped>
+.font-mode-picker {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  justify-content: center;
+}
+
+.font-mode-card-group {
+  display: grid;
+  width: min(660px, 100%);
+  margin-inline: auto;
+  grid-template-columns: repeat(2, minmax(0, 320px));
+  justify-content: center;
+  gap: 20px;
+}
+
+@media (max-width: 760px) {
+  .font-mode-card-group {
+    width: min(320px, 100%);
+    grid-template-columns: minmax(0, 320px);
+  }
+}
+
+@keyframes font-card-fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.font-card-appear {
+  animation: font-card-fade-in 240ms ease-out both;
+  animation-delay: var(--font-card-delay, 0ms);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .font-card-appear {
+    animation: none;
+  }
+}
+</style>

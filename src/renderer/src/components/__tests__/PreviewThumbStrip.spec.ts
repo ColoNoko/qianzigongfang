@@ -1,5 +1,7 @@
 // @vitest-environment jsdom
-import { describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { createPinia, setActivePinia } from 'pinia'
+beforeEach(() => setActivePinia(createPinia()))
 import { mount } from '@vue/test-utils'
 import PreviewThumbStrip, { type StripItem } from '../PreviewThumbStrip.vue'
 

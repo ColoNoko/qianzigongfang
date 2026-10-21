@@ -7,6 +7,8 @@ import {
   type BuildLabelPlusPsdInput,
   type PreparedTextLayer
 } from '../labelplus-psd'
+import { fontReference } from '@shared/fonts/resolve'
+import type { SystemFontInfo } from '@shared/ipc-api'
 import { createDefaultTextStyle } from '@shared/labelplus-import'
 
 function pixelData() {
@@ -61,6 +63,29 @@ describe('LabelPlus PSD writer', () => {
     })) as unknown as Parameters<typeof initializeCanvas>[0])
   })
 
+  it.each(['horizontal', 'vertical'] as const)(
+    'retains the selected TTC PostScript face through %s PSD serialization',
+    (direction) => {
+      const value = input()
+      const selected = {
+        id: 'collection:1',
+        family: 'Fixture',
+        style: 'Italic',
+        postScriptName: 'Fixture-Italic',
+        filePath: 'fixture.ttc'
+      } as SystemFontInfo
+      value.textLayers[0].style.font = fontReference(selected)
+      value.textLayers[0].style.direction = direction
+      const parsed = readPsd(serializeLabelPlusPsd(value), { useImageData: true, useRawData: true })
+      const text = parsed.children
+        ?.flatMap((layer) => layer.children ?? [])
+        .find((layer) => layer.text)?.text
+      expect(text?.style?.font?.name).toBe('Fixture-Italic')
+      expect(text?.orientation).toBe(direction)
+      expect(text?.text).toBe('示例文字')
+    }
+  )
+
   it('creates separate frame groups and native horizontal text descriptors', () => {
     const psd = buildLabelPlusPsd(input())
     const groups = psd.children?.filter((layer) => layer.children)
@@ -72,37 +97,30 @@ describe('LabelPlus PSD writer', () => {
     expect(firstText?.text?.style?.font?.name).toBe('ArialMT')
   })
 
-  /**
-   * 字号是**像素**，但 ag-psd 写进描述符的 `fontSize` 会被 PS 当"点"、按文档分辨率
-   * （这份 PSD 声明的 `resolutionPpi`）解释。所以要按 72/ppi 折算，PS 打开时才得到
-   * 与工坊预览一样的像素。
-   *
-   * 不折算的后果（2026-09-23 真机）：本地预览 75px、PS 里 18px，差 4 倍多。
-   */
-  it('字号按像素折算进描述符：ppi 越高，写进去的点数越小', () => {
-    const at72 = input()
-    at72.resolutionPpi = 72
-    at72.textLayers[0].style = { ...at72.textLayers[0].style, fontSizePx: 72 }
-
-    const at300 = input()
-    at300.resolutionPpi = 300
-    at300.textLayers[0].style = { ...at300.textLayers[0].style, fontSizePx: 72 }
-
-    const fontSizeOf = (value: typeof at72): number | undefined =>
-      buildLabelPlusPsd(value).children
-        ?.flatMap((layer) => layer.children ?? [])
-        .find((layer) => layer.text)?.text?.style?.fontSize
-
-    // 72ppi 时 1pt == 1px，原样写。
-    expect(fontSizeOf(at72)).toBeCloseTo(72, 5)
-    // 300ppi 时要把 72px 折算成 17.28pt —— PS 才会渲染成 72px。
-    expect(fontSizeOf(at300)).toBeCloseTo(72 * (72 / 300), 5)
+  it.each([72, 144, 300, 600])('preserves editable pixel size and direction at %i PPI', (resolutionPpi) => {
+    for (const direction of ['horizontal', 'vertical'] as const) {
+      const value = input()
+      value.resolutionPpi = resolutionPpi
+      value.textLayers[0].style = { ...value.textLayers[0].style, direction, fontSizePx: 72, leadingPercent: 120 }
+      const buffer = serializeLabelPlusPsd(value)
+      const parsed = readPsd(buffer, { useImageData: true, useRawData: true })
+      const text = parsed.children?.flatMap(layer => layer.children ?? []).find(layer => layer.text)?.text
+      expect(text?.orientation).toBe(direction)
+      expect(text?.style?.fontSize).toBe(72)
+      expect(text?.paragraphStyle?.autoLeading).toBeCloseTo(1.2)
+      expect(parsed.imageResources?.resolutionInfo?.horizontalResolution).toBe(resolutionPpi)
+      // Inspect the native engine values as well as the decoded TySh orientation.
+      if (direction === 'vertical') {
+        expect(buffer.toString('latin1')).toMatch(/\/WritingDirection\s+2/)
+        expect(buffer.toString('latin1')).toMatch(/\/Procession\s+1/)
+      }
+    }
   })
 
   it('自由连字写进 PSD 描述符，关掉也要如实写', () => {
     const readLigatures = (value: ReturnType<typeof input>): boolean | undefined =>
-      buildLabelPlusPsd(value).children
-        ?.flatMap((layer) => layer.children ?? [])
+      buildLabelPlusPsd(value)
+        .children?.flatMap((layer) => layer.children ?? [])
         .find((layer) => layer.text)?.text?.style?.ligatures
 
     // 默认是开的（跟随 PS 与 ag-psd 的默认）。
@@ -141,9 +159,8 @@ describe('LabelPlus PSD writer', () => {
         useImageData: true,
         useRawData: true
       })
-      return parsed.children
-        ?.flatMap((layer) => layer.children ?? [])
-        .find((layer) => layer.text)?.text?.style?.baselineDirection
+      return parsed.children?.flatMap((layer) => layer.children ?? []).find((layer) => layer.text)
+        ?.text?.style?.baselineDirection
     }
 
     expect(readBaseline(verticalOn)).toBe(1)
@@ -160,9 +177,8 @@ describe('LabelPlus PSD writer', () => {
 
     const parsed = readPsd(buffer, { useImageData: true, useRawData: true })
     expect(parsed.children?.map((layer) => layer.name)).toEqual(['原图片', '框内', '框外'])
-    const textLayers = parsed.children
-      ?.flatMap((group) => group.children ?? [])
-      .filter((layer) => layer.text) ?? []
+    const textLayers =
+      parsed.children?.flatMap((group) => group.children ?? []).filter((layer) => layer.text) ?? []
     // The initial writer intentionally leaves TextIndex and TySh bounds
     // absent. ag-psd serializes the descriptor in the same form as its own
     // simple text example; synthetic non-zero indexes/bounds were introduced
@@ -170,7 +186,7 @@ describe('LabelPlus PSD writer', () => {
     expect(textLayers.map((layer) => layer.text?.index)).toEqual([0, 0])
   })
 
-  it('keeps a safe horizontal descriptor for vertical preview requests', () => {
+  it('keeps vertical editable text for vertical preview requests', () => {
     const vertical = input()
     vertical.textLayers[0].style = {
       ...vertical.textLayers[0].style,
@@ -178,10 +194,13 @@ describe('LabelPlus PSD writer', () => {
     }
     const psd = buildLabelPlusPsd(vertical)
     const insideGroup = psd.children?.find((layer) => layer.name === '框内')
-    expect(insideGroup?.children?.[0]?.text?.orientation).toBe('horizontal')
+    expect(insideGroup?.children?.[0]?.text?.orientation).toBe('vertical')
 
-    const parsed = readPsd(serializeLabelPlusPsd(vertical), { useImageData: true, useRawData: true })
+    const parsed = readPsd(serializeLabelPlusPsd(vertical), {
+      useImageData: true,
+      useRawData: true
+    })
     const parsedInside = parsed.children?.find((layer) => layer.name === '框内')
-    expect(parsedInside?.children?.[0]?.text?.orientation).toBe('horizontal')
+    expect(parsedInside?.children?.[0]?.text?.orientation).toBe('vertical')
   })
 })

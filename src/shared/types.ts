@@ -48,6 +48,15 @@ export interface ChildProject {
   lastMtimeMs: number // latest PSD mtime in this child, for sorting
   psdStats?: PsdStat[] // optional cached stats from the latest import/scan
   statsVersion?: number // cache schema version for paired-file-only progress
+  /**
+   * 这一话的**内容指纹**（2026-10-05，R1）：稳定扫描时记录一次，
+   * 用于"本地文件夹改名后认回原来那一话"（目录不在的旧话 + 指纹相同的候选 ⇒ 疑似改名）。
+   *
+   * ⚠️ 与 `ChildProjectScan.sourceRevision` 的分工：那个只含原图/TXT（给目录监听用），
+   * 这个含 **PSD + 原图 + TXT**（改名判定必须把 PSD 也算进去，否则"只有 PSD 的话"
+   * 指纹会退化成同一个常量、互相误配）。
+   */
+  contentFingerprint?: string
   /** 各模式的完成时间序列，用于月/年统计。 */
   psdModeStats?: Record<WorkMode, PsdStat[]>
   modeStatsVersion?: number
@@ -80,6 +89,8 @@ export interface ChildProgressUpdate {
 }
 
 export interface PsdEntry {
+  /** File revision; optional for historical records. */
+  size?: number
   absPath: string
   mtimeMs: number
   ctimeMs: number
@@ -102,6 +113,21 @@ export interface ChildProjectScan {
   imageFiles?: string[]
   txtFiles: string[]
   errors: { path: string; msg: string }[]
+  /**
+   * 扫描稳定性状态（2026-10-05 移植 0.4.0）：
+   *   · `complete`    全部读成功；
+   *   · `partial`     部分路径读失败（结果仍可用，但**入库前**要过 `requireCompleteScan`）；
+   *   · `unavailable` 章节根目录不在（被删 / 被改名）；
+   *   · `unstable`    调度器连续多次都没等到稳定结果（文件仍在写），由调度器给出。
+   * 与 `rootMissing` 的分工：`rootMissing` 只表达"目录不在"这一种，`status` 是全集。
+   */
+  status?: 'complete' | 'partial' | 'unavailable' | 'unstable'
+  /** 调度器每稳定一次 +1（同目录递增，调用方可判断"这是不是一份新结果"）。 */
+  revision?: number
+  /** 图片与 TXT 的指纹（path/size/mtime 的 sha256）：内容变了能看出来（目录监听用）。 */
+  sourceRevision?: string
+  /** **全部**文件（PSD + 原图 + TXT）的指纹 —— 只用于"改名认领"的比对（见 ChildProject）。 */
+  contentFingerprint?: string
   /**
    * 章节根目录本身**不在**（被删掉 / 被改名）。
    *

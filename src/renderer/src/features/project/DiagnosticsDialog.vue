@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import { Dialog, DialogContent, DialogTitle } from '@renderer/components/ui/dialog'
+import { Button as UiButton } from '@renderer/components/ui/button'
 // DiagnosticsDialog — 应用内诊断（D2）。
 //
 // 以前出问题只能去翻 `data/logs/psd-manager.log`（几十 MB 纯文本），或者等人一句句问
@@ -98,33 +100,25 @@ watch(
 </script>
 
 <template>
-  <div
-    v-if="open"
-    class="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-6"
-    data-testid="diagnostics-overlay"
-    @click.self="emit('close')"
-  >
-    <div
+  <Dialog :open="true" @update:open="!$event && (emit('close'))" v-if="open">
+    <DialogContent
       class="flex max-h-[85vh] w-full max-w-3xl flex-col overflow-hidden rounded-xl border border-border bg-card-bg text-text-primary shadow-[var(--shadow-3)]"
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby="diagnostics-title"
       data-testid="diagnostics-dialog"
-    >
+     :show-close="false" :aria-describedby="undefined">
       <header class="flex items-center gap-3 border-b border-border px-5 py-3">
-        <h2 id="diagnostics-title" class="text-[15px] font-semibold tracking-tight">诊断</h2>
+        <DialogTitle class="text-[15px] font-semibold tracking-tight">诊断</DialogTitle>
         <span class="text-[12px] text-text-tertiary">出问题时先看这一页</span>
-        <button
+        <UiButton variant="ghost" size="sm"
           type="button"
-          class="ml-auto flex h-7 items-center rounded-badge px-2 text-[12px] text-text-secondary transition-colors hover:bg-card-bg-hover hover:text-text-primary"
+          class="ml-auto flex items-center transition-colors"
           data-testid="diagnostics-refresh"
           @click="load"
         >
           刷新
-        </button>
-        <button
+        </UiButton>
+        <UiButton variant="ghost" size="sm"
           type="button"
-          class="flex h-7 w-7 shrink-0 items-center justify-center rounded-badge text-text-tertiary transition-colors hover:bg-card-bg-hover hover:text-text-primary"
+          class="flex w-7 shrink-0 items-center justify-center transition-colors"
           aria-label="关闭"
           data-testid="diagnostics-close"
           @click="emit('close')"
@@ -132,7 +126,7 @@ watch(
           <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <path d="M6 6l12 12M18 6L6 18" />
           </svg>
-        </button>
+        </UiButton>
       </header>
 
       <div class="min-h-0 flex-1 overflow-y-auto px-5 py-3" data-testid="diagnostics-body">
@@ -178,24 +172,24 @@ watch(
         <p class="min-w-0 flex-1 text-[11px] text-text-tertiary">
           这一页只读：不会改数据、也不会写文件。
         </p>
-        <button
+        <UiButton variant="outline" size="sm"
           type="button"
-          class="h-8 shrink-0 rounded-badge border border-border bg-card-bg px-3 text-[13px] text-text-secondary transition-colors hover:bg-card-bg-hover hover:text-text-primary"
+          class="shrink-0 transition-colors"
           data-testid="diagnostics-open-log"
           @click="openLogFile"
         >
           打开日志文件
-        </button>
-        <button
+        </UiButton>
+        <UiButton variant="default" size="sm"
           type="button"
-          class="h-8 shrink-0 rounded-badge bg-accent px-3 text-[13px] font-medium text-text-on-accent transition-colors hover:bg-primary-hover active:bg-primary-active disabled:cursor-not-allowed disabled:opacity-40"
+          class="shrink-0 transition-colors disabled:cursor-not-allowed disabled:opacity-40"
           :disabled="!snapshot || copying"
           data-testid="diagnostics-copy"
           @click="copySummary"
         >
           复制诊断信息
-        </button>
+        </UiButton>
       </footer>
-    </div>
-  </div>
+    </DialogContent>
+  </Dialog>
 </template>

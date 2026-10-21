@@ -330,5 +330,9 @@ describe('启动 Photoshop 与读回执', () => {
     const wrongShape = join(sandbox, 'wrong.json')
     await writeFile(wrongShape, '{"images":"不是数组"}', 'utf8')
     expect(await readLabelPlusJobReport(wrongShape)).toBeNull()
+    for (const patch of [{ images: [null] }, { warnings: {} }, { generated: '1' }, { images: [{ warnings: null }] }]) {
+      await writeFile(wrongShape, JSON.stringify({ jobId: 'job', images: [], warnings: [], generated: 0, failed: 0, skipped: 0, finishedAt: null, ...patch }))
+      expect(await readLabelPlusJobReport(wrongShape)).toBeNull()
+    }
   })
 })

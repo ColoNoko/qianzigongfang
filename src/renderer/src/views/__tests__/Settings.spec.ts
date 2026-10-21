@@ -1,6 +1,9 @@
 // @vitest-environment jsdom
-import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { mount, flushPromises } from '@vue/test-utils'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { config, enableAutoUnmount, mount, flushPromises } from '@vue/test-utils'
+config.global.stubs.teleport = true
+config.global.renderStubDefaultSlot = true
+enableAutoUnmount(afterEach)
 import { createPinia, setActivePinia } from 'pinia'
 import { useToastStore } from '@renderer/stores/toast'
 
@@ -55,6 +58,7 @@ async function mountSettings() {
   const pinia = createPinia()
   setActivePinia(pinia)
   const wrapper = mount(SettingsComponent, {
+    attachTo: document.body,
     global: { plugins: [pinia] }
   })
   return { wrapper, pinia }
@@ -70,36 +74,40 @@ beforeEach(async () => {
 })
 
 describe('Settings', () => {
-  it('renders thumbnail and about sections without duplicate theme controls', async () => {
-    setupComicType()
-    const { wrapper } = await mountSettings()
-
-    expect(wrapper.find('[data-testid="settings-thumb-section"]').exists()).toBe(true)
-    expect(wrapper.find('[data-testid="settings-theme-section"]').exists()).toBe(false)
-    expect(wrapper.find('[data-testid="settings-color-section"]').exists()).toBe(true)
-    expect(wrapper.find('[data-testid="settings-about-section"]').exists()).toBe(true)
-    expect(wrapper.text()).toContain('缩略图大小')
-    expect(wrapper.text()).toContain('关于')
-    // 版本号读的是构建期注入的全局（真源 = package.json）——
-    // 这里**不许**写版本字面量：以前写死过，改版本必漏（见 Settings-version.spec.ts）
-    expect(wrapper.text()).toContain(__APP_VERSION__)
-  })
-
-  it('updates the global hue in real time and persists the color settings', async () => {
+  it('custom colors stay a draft until saved', async () => {
     const { storeSet } = setupComicType()
     const { wrapper } = await mountSettings()
+    await flushPromises()
+    const open = async () => {
+      await wrapper.findAll('button').find(b => b.text() === '自定义…')!.trigger('click')
+      await flushPromises()
+    }
+    await open()
+    wrapper.findAllComponents({ name: 'ControlInput' }).find(c => c.attributes('aria-label') === '色相')!.vm.$emit('input', { target: { value: '145' } })
+    await flushPromises()
+    expect(storeSet).not.toHaveBeenCalledWith('theme.colors', expect.anything())
+    await wrapper.findAll('button').find(b => b.text() === '取消')!.trigger('click')
+    await open()
+    expect(wrapper.findAllComponents({ name: 'ControlInput' }).find(c => c.attributes('aria-label') === '色相')!.props('value')).toBe(262)
+    wrapper.findAllComponents({ name: 'ControlInput' }).find(c => c.attributes('aria-label') === '色相')!.vm.$emit('input', { target: { value: '145' } })
+    await flushPromises()
+    await wrapper.findAll('button').find(b => b.text() === '保存')!.trigger('click')
+    await flushPromises()
+    expect(storeSet).toHaveBeenCalledWith('theme.colors', { hue: 145, saturation: 58, neutralSaturation: 8 })
+  })
 
-    const slider = wrapper.get('[data-testid="theme-hue-slider"]')
-    await slider.setValue('145')
-
-    // 出厂配色（紫雾 262/58/8）决定这条断言里的饱和度与亮度基数：
-    // 拖色相滑杆只改 hue，饱和度/中性饱和度沿用当前设置。
-    expect(document.documentElement.style.getPropertyValue('--primary')).toBe('hsl(145 58% 52%)')
-    expect(storeSet).toHaveBeenCalledWith('theme.colors', {
-      hue: 145,
-      saturation: 58,
-      neutralSaturation: 8
-    })
+  it('limits default duties to two and exposes their priority', async () => {
+    setupComicType()
+    const { wrapper } = await mountSettings()
+    await flushPromises()
+    expect(wrapper.find('[aria-label="双职责优先级"]').exists()).toBe(false)
+    await wrapper.get('[aria-label="新漫画默认职责"] button[value="translated"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('[aria-label="双职责优先级"]').exists()).toBe(true)
+    expect((wrapper.get('[aria-label="新漫画默认职责"] button[value="proofread"]').element as HTMLButtonElement).disabled).toBe(true)
+    await wrapper.get('[aria-label="新漫画默认职责"] button[value="translated"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('[aria-label="双职责优先级"]').exists()).toBe(false)
   })
 
   it('offers a follow-system appearance mode and persists it', async () => {
@@ -116,9 +124,9 @@ describe('Settings', () => {
     const { storeSet } = setupComicType()
     const { wrapper } = await mountSettings()
 
-    const radio = wrapper.find('[data-testid="thumb-radio-大"]')
+    const radio = wrapper.find('[aria-label="全局缩略图大小"] button[value="大"]')
     expect(radio.exists()).toBe(true)
-    await radio.trigger('change')
+    await radio.trigger('click')
 
     expect(storeSet).toHaveBeenCalledWith('ui.thumbSize', '大')
   })
@@ -127,8 +135,8 @@ describe('Settings', () => {
     const { storeSet } = setupComicType()
     const { wrapper } = await mountSettings()
 
-    const radio = wrapper.get('[data-testid="child-sort-radio-descending"]')
-    await radio.trigger('change')
+    const radio = wrapper.get('[aria-label="集数排序"] button[value="descending"]')
+    await radio.trigger('click')
 
     expect(storeSet).toHaveBeenCalledWith('ui.childSortOrder', 'descending')
   })
@@ -138,8 +146,8 @@ describe('Settings', () => {
     const { wrapper } = await mountSettings()
     await flushPromises()
 
-    const midRadio = wrapper.find('[data-testid="thumb-radio-中"]')
-    expect((midRadio.element as HTMLInputElement).checked).toBe(true)
+    const midRadio = wrapper.find('[aria-label="全局缩略图大小"] button[value="中"]')
+    expect(midRadio.attributes('aria-pressed')).toBe('true')
   })
 
   it('imports automatically recognized legacy JSON and reports the result', async () => {
@@ -152,37 +160,6 @@ describe('Settings', () => {
     expect(importLegacyJson).toHaveBeenCalledOnce()
     const toast = useToastStore(pinia)
     expect(toast.toasts.some((item) => item.message.includes('新增 2 个项目'))).toBe(true)
-  })
-})
-
-/**
- * 看图三件套 · 需求二：自动播放间隔（90 秒那张脸）。
- * 设置页这一栏是"能在设置里调"这句话的落点，所以要有一条真点它的用例。
- */
-describe('Settings 预览播放间隔', () => {
-  it('三档都在；点「1.5 秒」会把 ui.playIntervalMs 落库', async () => {
-    const { storeSet } = setupComicType()
-    const { wrapper } = await mountSettings()
-    await flushPromises()
-
-    expect(wrapper.find('[data-testid="settings-play-section"]').exists()).toBe(true)
-    for (const value of [1500, 2000, 3000]) {
-      expect(wrapper.find(`[data-testid="play-interval-radio-${value}"]`).exists()).toBe(true)
-    }
-
-    await wrapper.get('[data-testid="play-interval-radio-1500"]').trigger('change')
-
-    expect(storeSet).toHaveBeenCalledWith('ui.playIntervalMs', 1500)
-  })
-
-  it('默认选中的是 2 秒', async () => {
-    setupComicType()
-    const { wrapper } = await mountSettings()
-    await flushPromises()
-
-    const checked = wrapper.get('[data-testid="play-interval-radio-2000"]')
-      .element as HTMLInputElement
-    expect(checked.checked).toBe(true)
   })
 })
 
@@ -295,22 +272,11 @@ describe('Settings 数据安全', () => {
     return { dbBackupCreate, dbBackupRestorePreview, openPath }
   }
 
-  it('三样入口都在；有备份时列出时间/来源/行数，没有时给一句人话', async () => {
-    setupSafetyBridge()
-    const { wrapper } = await mountSettings()
-    await flushPromises()
-
-    expect(wrapper.find('[data-testid="settings-data-safety-section"]').exists()).toBe(true)
-    expect(wrapper.find('[data-testid="db-backup-now"]').exists()).toBe(true)
-    expect(wrapper.find('[data-testid="mark-history-open"]').exists()).toBe(true)
-    expect(wrapper.get('[data-testid="db-backup-list"]').text()).toContain('3281 条标记记录')
-  })
-
-  it('没有备份时说明白"还没有备份"，而不是空一片', async () => {
+  it('backup management remains accessible with no backups', async () => {
     setupSafetyBridge({ list: [] })
     const { wrapper } = await mountSettings()
     await flushPromises()
-
+    await wrapper.get('[data-testid="db-backup-open-all"]').trigger('click')
     expect(wrapper.get('[data-testid="db-backup-empty"]').text()).toContain('还没有备份')
   })
 
@@ -335,6 +301,7 @@ describe('Settings 数据安全', () => {
 
     // 整页真的渲染出来了（出事时这一节根本不存在）
     expect(wrapper.find('[data-testid="settings-data-safety-section"]').exists()).toBe(true)
+    await wrapper.get('[data-testid="db-backup-open-all"]').trigger('click')
     const list = wrapper.get('[data-testid="db-backup-list"]').text()
     // 行数拿不到就显示 0，不许把整页带崩
     expect(list).toContain('0 条标记记录')
@@ -359,6 +326,7 @@ describe('Settings 数据安全', () => {
     const { wrapper } = await mountSettings()
     await flushPromises()
 
+    await wrapper.get('[data-testid="db-backup-open-all"]').trigger('click')
     await wrapper.get('[data-testid="db-backup-restore-manual"]').trigger('click')
     await flushPromises()
 
@@ -371,60 +339,14 @@ describe('Settings 数据安全', () => {
     ).toBe(false)
   })
 
-  /**
-   * 第二十三轮：设置页里的备份列表**只摆最新 3 条**，其余进「备份管理」弹窗。
-   *
-   * 为什么不是"就地展开"：保留策略是 `KEEP_BACKUPS = 20`，那块列表迟早会有 20 行
-   * （每行约 44px ⇒ 约 880px），设置页会被这一块长期撑长；而同一张卡里已经有
-   * 「标记记录 / 诊断 / 还原标记」三个弹窗先例 —— 弹窗是这里既有的语言。
-   */
-  it('卡片只摆最新 3 条 —— 其余不在设置页里铺开', async () => {
+  it('management opens all backups without filling the settings page', async () => {
     setupSafetyBridge({ list: makeBackups(8) })
     const { wrapper } = await mountSettings()
     await flushPromises()
-
-    expect(wrapper.findAll('[data-testid="db-backup-item"]')).toHaveLength(3)
-    const cardText = wrapper.get('[data-testid="db-backup-list"]').text()
-    // 最新那条在（3281），第 4 条（3278）不许出现在卡里
-    expect(cardText).toContain('3281 条标记记录')
-    expect(cardText).not.toContain('3278 条标记记录')
-  })
-
-  it('超过 3 条时给「全部 N 条」入口，文案带真实总数', async () => {
-    setupSafetyBridge({ list: makeBackups(8) })
-    const { wrapper } = await mountSettings()
-    await flushPromises()
-
-    expect(wrapper.get('[data-testid="db-backup-open-all"]').text()).toContain('8')
-  })
-
-  it('3 条以内不出现「全部 N 条」入口（没有多余的东西要点）', async () => {
-    setupSafetyBridge({ list: makeBackups(3) })
-    const { wrapper } = await mountSettings()
-    await flushPromises()
-
-    expect(wrapper.find('[data-testid="db-backup-open-all"]').exists()).toBe(false)
-    expect(wrapper.findAll('[data-testid="db-backup-item"]')).toHaveLength(3)
-  })
-
-  it('点「全部 N 条」开备份管理弹窗：弹窗里是全部 N 条，卡片仍只有 3 条', async () => {
-    setupSafetyBridge({ list: makeBackups(8) })
-    const { wrapper } = await mountSettings()
-    await flushPromises()
-
+    expect(wrapper.findAll('[data-testid="db-backup-item"]')).toHaveLength(0)
     await wrapper.get('[data-testid="db-backup-open-all"]').trigger('click')
-
-    const dialog = wrapper.get('[data-testid="db-backup-manager-dialog"]')
-    // 弹窗头把总数写清楚（照 MarkHistoryDialog 的"最近 N 次操作"那样）
-    expect(dialog.text()).toContain('共 8 份')
-    expect(
-      wrapper.findAll('[data-testid="db-backup-manager-list"] [data-testid="db-backup-item"]')
-    ).toHaveLength(8)
-    // 卡片那一份仍然只有 3 条（行渲染是同一个组件，所以这里必须按卡片范围数，
-    // 不能只按 db-backup-list 数 —— 弹窗里那个列表用的是同一个 testid）
-    expect(
-      wrapper.findAll('[data-testid="settings-data-safety-section"] [data-testid="db-backup-item"]')
-    ).toHaveLength(3)
+    expect(wrapper.get('[data-testid="db-backup-manager-dialog"]').text()).toContain('共 8 份')
+    expect(wrapper.findAll('[data-testid="db-backup-manager-list"] [data-testid="db-backup-item"]')).toHaveLength(8)
   })
 
   it('弹窗里的「还原标记」还是走既有还原确认窗（不另起一条链路）', async () => {
@@ -452,7 +374,7 @@ describe('Settings 数据安全', () => {
     await flushPromises()
     const storeSet = window.comicType.storeSet as ReturnType<typeof vi.fn>
 
-    await wrapper.get('[data-testid="auto-backup-toggle"]').setValue(false)
+    await wrapper.get('[data-testid="auto-backup-toggle"]').trigger('click')
 
     expect(storeSet).toHaveBeenCalledWith('ui.autoBackup', false)
   })

@@ -1,3 +1,6 @@
+import { createPinia, setActivePinia } from 'pinia'
+import { useSettingsStore } from '@renderer/stores/settings'
+beforeEach(() => setActivePinia(createPinia()))
 // @vitest-environment jsdom
 import { describe, expect, it, vi, beforeEach } from 'vitest'
 import { mount, type VueWrapper } from '@vue/test-utils'
@@ -22,7 +25,7 @@ const IMAGE = { width: 2000, height: 2000 }
 /** 容器 1000、图 2000 → 适应窗口的比例是 0.5；倍数为 2 时画面上就是 scale(1)。 */
 const FIT = 0.5
 
-function viewer(props: { src: string; zoomRatio?: number }): VueWrapper {
+function viewer(props: { src: string; zoomRatio?: number; drawMode?: boolean }): VueWrapper {
   const wrapper = mount(ImageViewer, { props }) as VueWrapper
   const root = wrapper.element as HTMLElement
   Object.defineProperty(root, 'clientWidth', { value: CONTAINER.width, configurable: true })
@@ -46,7 +49,10 @@ async function pretendImageLoaded(
  * 必须手工建 WheelEvent：@vue/test-utils 的 `trigger('wheel', { ctrlKey })`
  * 会去写 MouseEvent 上只读的 ctrlKey，在 jsdom 里直接抛错。
  */
-async function wheel(wrapper: VueWrapper, init: { ctrlKey: boolean; deltaY: number }): Promise<void> {
+async function wheel(
+  wrapper: VueWrapper,
+  init: { ctrlKey: boolean; deltaY: number }
+): Promise<void> {
   wrapper.element.dispatchEvent(
     new WheelEvent('wheel', {
       ctrlKey: init.ctrlKey,
@@ -82,13 +88,12 @@ describe('ImageViewer 缩放', () => {
     expect(wrapper.emitted('update:zoomRatio')).toBeFalsy()
   })
 
-  it('自管模式：光滚轮（不带 Ctrl）不缩放 —— 那是翻页的手势', async () => {
-    const wrapper = viewer({ src: 'data:image/png;base64,x' })
+  it('普通滚轮仅请求翻页，不改变缩放', async () => {
+    const wrapper = viewer({ src: 'fixture' })
     await pretendImageLoaded(wrapper)
-
     await wheel(wrapper, { ctrlKey: false, deltaY: -100 })
-
     expect(scaleOf(wrapper)).toBeCloseTo(FIT, 5)
+    expect(wrapper.emitted('pageWheel')).toEqual([[-100]])
   })
 
   it('受控模式：倍数由 prop 决定（父组件说 2 倍就是 2 倍）', async () => {
@@ -154,4 +159,39 @@ describe('ImageViewer 缩放', () => {
 
     expect(scaleOf(wrapper)).toBeCloseTo(FIT, 5)
   })
+})
+
+describe('标点时平移', () => {
+  it('点击仍显示标点光标，超过拖动阈值才移动图像', async () => {
+    const wrapper = viewer({ src: 'fixture', zoomRatio: 2, drawMode: true })
+    await pretendImageLoaded(wrapper)
+    const before = wrapper.find('img').attributes('style')
+    await wrapper.trigger('mousedown', { button: 0, clientX: 100, clientY: 100 })
+    window.dispatchEvent(new MouseEvent('mousemove', { clientX: 102, clientY: 102 }))
+    await wrapper.vm.$nextTick()
+    expect(wrapper.find('img').attributes('style')).toBe(before)
+    window.dispatchEvent(new MouseEvent('mousemove', { clientX: 150, clientY: 140 }))
+    await wrapper.vm.$nextTick()
+      expect(wrapper.find('img').attributes('style')).not.toBe(before)
+      window.dispatchEvent(new MouseEvent('mousemove', { clientX: 100, clientY: 100 }))
+      await wrapper.vm.$nextTick()
+      expect(wrapper.find('img').attributes('style')).toBe(before)
+      expect(wrapper.emitted('panStart')).toHaveLength(1)
+    window.dispatchEvent(new MouseEvent('mouseup'))
+    await wrapper.vm.$nextTick()
+    expect(wrapper.element.style.cursor).toBe('crosshair')
+    wrapper.unmount()
+  })
+})
+
+it('inverts wheel zoom and page navigation together', async () => {
+ const wrapper = viewer({ src: 'x.png', zoomRatio: 1 })
+ await pretendImageLoaded(wrapper)
+ useSettingsStore().invertWheel = true
+ await wheel(wrapper, { deltaY: -100, ctrlKey: false })
+ expect(wrapper.emitted('update:zoomRatio')).toHaveLength(1)
+ expect(wrapper.emitted('pageWheel')).toBeUndefined()
+ await wheel(wrapper, { deltaY: 100, ctrlKey: true })
+ expect(wrapper.emitted('pageWheel')).toEqual([[100]])
+ wrapper.unmount()
 })

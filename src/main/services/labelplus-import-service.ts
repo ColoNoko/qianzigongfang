@@ -1,5 +1,6 @@
-import { mkdir, stat, writeFile } from 'node:fs/promises'
+import { mkdir, stat } from 'node:fs/promises'
 import { randomUUID } from 'node:crypto'
+import { publishOutput } from './atomic-output'
 import { basename, dirname, join, parse, resolve } from 'node:path'
 import type {
   LabelPlusFileSelection,
@@ -53,7 +54,9 @@ function assertApiVersion(apiVersion: number): void {
   }
 }
 
-function imageSummary(document: Awaited<ReturnType<typeof readLabelPlusFile>>): LabelPlusFileSelection['images'] {
+function imageSummary(
+  document: Awaited<ReturnType<typeof readLabelPlusFile>>
+): LabelPlusFileSelection['images'] {
   return document.images.map((image) => {
     const groupCounts: Record<string, number> = {}
     for (const label of image.labels) groupCounts[label.group] = (groupCounts[label.group] ?? 0) + 1
@@ -70,7 +73,9 @@ async function optionalDirectory(path: string): Promise<string> {
   }
 }
 
-export async function createLabelPlusFileSelection(filePath: string): Promise<LabelPlusFileSelection> {
+export async function createLabelPlusFileSelection(
+  filePath: string
+): Promise<LabelPlusFileSelection> {
   const absolutePath = resolve(filePath)
   const document = await readLabelPlusFile(absolutePath)
   const parent = dirname(absolutePath)
@@ -94,7 +99,9 @@ export async function createLabelPlusFileSelection(filePath: string): Promise<La
   }
 }
 
-export async function previewLabelPlusImport(request: LabelPlusMatchRequest): Promise<LabelPlusMatchPreview> {
+export async function previewLabelPlusImport(
+  request: LabelPlusMatchRequest
+): Promise<LabelPlusMatchPreview> {
   assertApiVersion(request.apiVersion)
   const document = await readLabelPlusFile(resolve(request.labelFilePath))
   const sourceDirectory = resolve(request.sourceDirectory)
@@ -148,7 +155,9 @@ export function normalizedOptions(options: LabelPlusGenerateOptions): LabelPlusG
       id: String(sourceFont.id ?? 'builtin-arial'),
       family,
       style,
-      postScriptName: String(sourceFont.postScriptName ?? '').trim() || `${family.replace(/[^A-Za-z0-9]+/g, '') || 'Arial'}MT`,
+      postScriptName:
+        String(sourceFont.postScriptName ?? '').trim() ||
+        `${family.replace(/[^A-Za-z0-9]+/g, '') || 'Arial'}MT`,
       ...(sourceFont.filePath ? { filePath: sourceFont.filePath } : {})
     },
     direction,
@@ -158,7 +167,7 @@ export function normalizedOptions(options: LabelPlusGenerateOptions): LabelPlusG
       1,
       720
     ),
-    leadingPercent: clampFiniteNumber(Number(sourceStyle.leadingPercent ?? 100), 50, 500),
+    leadingPercent: clampFiniteNumber(Number(sourceStyle.leadingPercent ?? 120), 50, 500),
     alignment,
     strokeWidthPx: clampFiniteNumber(Number(sourceStyle.strokeWidthPx ?? 0), 0, 100),
     fillColor: String(sourceStyle.fillColor ?? '#000000'),
@@ -174,9 +183,7 @@ export function normalizedOptions(options: LabelPlusGenerateOptions): LabelPlusG
       opacity: clampFiniteNumber(Number(sourceShadow.opacity ?? 0.5), 0, 1),
       distancePx: clampFiniteNumber(Number(sourceShadow.distancePx ?? 0), 0, 500),
       blurPx: clampFiniteNumber(Number(sourceShadow.blurPx ?? 0), 0, 500),
-      angleDeg: Number.isFinite(Number(sourceShadow.angleDeg))
-        ? Number(sourceShadow.angleDeg)
-        : 120
+      angleDeg: Number.isFinite(Number(sourceShadow.angleDeg)) ? Number(sourceShadow.angleDeg) : 120
     }
   }
   parseHexColor(textStyle.fillColor)
@@ -368,7 +375,11 @@ async function selectedLabels(
   width: number,
   height: number,
   rasterizer: LabelPlusTextRasterizer
-): Promise<{ textLayers: PreparedTextLayer[]; overlayPoints: Array<{ x: number; y: number }>; warnings: string[] }> {
+): Promise<{
+  textLayers: PreparedTextLayer[]
+  overlayPoints: Array<{ x: number; y: number }>
+  warnings: string[]
+}> {
   const textLayers: PreparedTextLayer[] = []
   const overlayPoints: Array<{ x: number; y: number }> = []
   const warnings: string[] = []
@@ -381,17 +392,12 @@ async function selectedLabels(
     const text = applyTextReplacementRules(label.text, rules)
     let raster: PreparedRasterLayer | undefined
     try {
-      raster = await renderTextRaster(
-        text,
-        position,
-        textStyle,
-        width,
-        height,
-        rasterizer
-      )
+      raster = await renderTextRaster(text, position, textStyle, width, height, rasterizer)
       if (!raster && text.trim()) warnings.push(`第 ${label.index} 条文字预览没有生成像素`)
     } catch (error) {
-      warnings.push(`第 ${label.index} 条文字预览生成失败：${error instanceof Error ? error.message : String(error)}`)
+      warnings.push(
+        `第 ${label.index} 条文字预览生成失败：${error instanceof Error ? error.message : String(error)}`
+      )
     }
     textLayers.push({
       name: text || `Label ${label.index}`,
@@ -402,7 +408,10 @@ async function selectedLabels(
       raster
     })
 
-    if (options.dialogOverlay.enabled && (overlayGroups.size === 0 || overlayGroups.has(label.group))) {
+    if (
+      options.dialogOverlay.enabled &&
+      (overlayGroups.size === 0 || overlayGroups.has(label.group))
+    ) {
       overlayPoints.push({ x: position.x, y: position.y })
     }
 
@@ -425,7 +434,9 @@ async function selectedLabels(
         )
         if (!indexRaster) warnings.push(`第 ${label.index} 条编号预览没有生成像素`)
       } catch (error) {
-        warnings.push(`第 ${label.index} 条编号预览生成失败：${error instanceof Error ? error.message : String(error)}`)
+        warnings.push(
+          `第 ${label.index} 条编号预览生成失败：${error instanceof Error ? error.message : String(error)}`
+        )
       }
       textLayers.push({
         name: `Label ${label.index}`,
@@ -466,7 +477,9 @@ export async function generateLabelPlusPsd(
   const preview = matchLabelPlusImages(document, sourceFiles, request.match)
   const options = normalizedOptions(request.options)
   const rules = parseTextReplacementExpression(options.textReplacementExpression)
-  const selectedImages = new Set(Array.isArray(request.selectedImageNames) ? request.selectedImageNames : [])
+  const selectedImages = new Set(
+    Array.isArray(request.selectedImageNames) ? request.selectedImageNames : []
+  )
   const requestedGroups = Array.isArray(request.selectedGroups) ? request.selectedGroups : []
   const selectedGroups = new Set(requestedGroups.length > 0 ? requestedGroups : document.groups)
   await mkdir(outputDirectory, { recursive: true })
@@ -474,100 +487,102 @@ export async function generateLabelPlusPsd(
   const files: LabelPlusGeneratedFile[] = []
   const overallWarnings = [...document.warnings, ...preview.warnings]
   if (normalizeTextDirection(request.options?.textStyle) === 'vertical') {
-    overallWarnings.push('竖排使用竖排预览；为避免 ag-psd 生成损坏 PSD，原生文字层安全回退为横排描述符')
+    overallWarnings.push(
+      '竖排使用竖排预览；为避免 ag-psd 生成损坏 PSD，原生文字层安全回退为横排描述符'
+    )
   }
 
   const rasterizer = await createLabelPlusTextRasterizer()
   try {
     for (const row of preview.rows) {
-    // 空数组 = **什么都没选**（不是"全选"）：2026-09-30 审查 critical。
-    // 原来写的是 `selectedImages.size > 0 && !selectedImages.has(...)` —— size === 0 时
-    // 判据永不成立，界面上的「清空」（已选 0 张）就让整份文本的每一张图都出图；
-    // 勾了「覆盖已有 PSD」时直接覆盖用户没勾的文件。要全量，必须由界面显式
-    // 「全选」把数组填满（Import.vue 的 selectAllImages）来表达。
-    if (!selectedImages.has(row.labelImageName)) {
-      files.push(skippedFile(row, '未选择'))
-      continue
-    }
-    const sourceImage = document.images.find((image) => image.fileName === row.labelImageName)
-    if (!sourceImage) {
-      files.push(skippedFile(row, '文本记录不存在'))
-      continue
-    }
-    if (options.ignoreImagesWithoutLabels && sourceImage.labels.length === 0) {
-      files.push(skippedFile(row, '没有标签，已忽略'))
-      continue
-    }
-    if (!row.matched || !row.sourcePath) {
-      files.push(skippedFile(row, '未匹配到图源'))
-      continue
-    }
-
-    const outputPath = join(outputDirectory, safeOutputName(row.sourceFileName ?? row.labelImageName))
-    try {
-      if (!options.overwriteExisting) {
-        try {
-          await stat(outputPath)
-          files.push({
-            ...skippedFile(row, '输出文件已存在，未覆盖'),
-            outputPath
-          })
-          continue
-        } catch {
-          // The output does not exist; continue.
-        }
+      // 空数组 = **什么都没选**（不是"全选"）：2026-09-30 审查 critical。
+      // 原来写的是 `selectedImages.size > 0 && !selectedImages.has(...)` —— size === 0 时
+      // 判据永不成立，界面上的「清空」（已选 0 张）就让整份文本的每一张图都出图；
+      // 勾了「覆盖已有 PSD」时直接覆盖用户没勾的文件。要全量，必须由界面显式
+      // 「全选」把数组填满（Import.vue 的 selectAllImages）来表达。
+      if (!selectedImages.has(row.labelImageName)) {
+        files.push(skippedFile(row, '未选择'))
+        continue
+      }
+      const sourceImage = document.images.find((image) => image.fileName === row.labelImageName)
+      if (!sourceImage) {
+        files.push(skippedFile(row, '文本记录不存在'))
+        continue
+      }
+      if (options.ignoreImagesWithoutLabels && sourceImage.labels.length === 0) {
+        files.push(skippedFile(row, '没有标签，已忽略'))
+        continue
+      }
+      if (!row.matched || !row.sourcePath) {
+        files.push(skippedFile(row, '未匹配到图源'))
+        continue
       }
 
-      const background = await decodeLabelPlusSourceImage(row.sourcePath)
-      const selected = await selectedLabels(
-        sourceImage,
-        selectedGroups,
-        options,
-        rules,
-        background.width,
-        background.height,
-        rasterizer
+      const outputPath = join(
+        outputDirectory,
+        safeOutputName(row.sourceFileName ?? row.labelImageName)
       )
-      const overlay = createDialogOverlayRaster(background, selected.overlayPoints, options.dialogOverlay)
-      const composite = clonePixelData(background)
-      if (overlay) blendRasterOntoPixelData(composite, overlay)
-      for (const layer of selected.textLayers) {
-        if (layer.raster) blendRasterOntoPixelData(composite, layer.raster)
-      }
+      try {
+        // 不覆盖模式的"目标已存在"判定交给 publishOutput：创建即判定，
+        // 没有"先 stat 再写"的竞争窗口（2026-10-05 从并行分支 T6 移植）。
+        // 覆盖模式：临时文件 + fsync + 原子改名 —— 写一半失败不会截断上一份能用的 PSD。
+        const background = await decodeLabelPlusSourceImage(row.sourcePath)
+        const selected = await selectedLabels(
+          sourceImage,
+          selectedGroups,
+          options,
+          rules,
+          background.width,
+          background.height,
+          rasterizer
+        )
+        const overlay = createDialogOverlayRaster(
+          background,
+          selected.overlayPoints,
+          options.dialogOverlay
+        )
+        const composite = clonePixelData(background)
+        if (overlay) blendRasterOntoPixelData(composite, overlay)
+        for (const layer of selected.textLayers) {
+          if (layer.raster) blendRasterOntoPixelData(composite, layer.raster)
+        }
 
-      const buffer = serializeLabelPlusPsd({
-        width: background.width,
-        height: background.height,
-        resolutionPpi: options.resolutionPpi,
-        background,
-        composite,
-        textLayers: selected.textLayers,
-        groupOrder: [...requestedGroups, '_Label'],
-        createLayerGroups: options.createLayerGroups,
-        dialogOverlay: overlay
-      })
-      await writeFile(outputPath, buffer)
-      files.push({
-        labelImageName: row.labelImageName,
-        sourcePath: row.sourcePath,
-        outputPath,
-        status: 'generated',
-        textLayerCount: selected.textLayers.length,
-        message: '已生成',
-        warnings: selected.warnings
-      })
-      overallWarnings.push(...selected.warnings)
-    } catch (error) {
-      files.push({
-        labelImageName: row.labelImageName,
-        sourcePath: row.sourcePath,
-        outputPath,
-        status: 'failed',
-        textLayerCount: 0,
-        message: error instanceof Error ? error.message : String(error),
-        warnings: []
-      })
-    }
+        const buffer = serializeLabelPlusPsd({
+          width: background.width,
+          height: background.height,
+          resolutionPpi: options.resolutionPpi,
+          background,
+          composite,
+          textLayers: selected.textLayers,
+          groupOrder: [...requestedGroups, '_Label'],
+          createLayerGroups: options.createLayerGroups,
+          dialogOverlay: overlay
+        })
+        if (!(await publishOutput(outputPath, buffer, options.overwriteExisting))) {
+          files.push({ ...skippedFile(row, '输出文件已存在，未覆盖'), outputPath })
+          continue
+        }
+        files.push({
+          labelImageName: row.labelImageName,
+          sourcePath: row.sourcePath,
+          outputPath,
+          status: 'generated',
+          textLayerCount: selected.textLayers.length,
+          message: '已生成',
+          warnings: selected.warnings
+        })
+        overallWarnings.push(...selected.warnings)
+      } catch (error) {
+        files.push({
+          labelImageName: row.labelImageName,
+          sourcePath: row.sourcePath,
+          outputPath,
+          status: 'failed',
+          textLayerCount: 0,
+          message: error instanceof Error ? error.message : String(error),
+          warnings: []
+        })
+      }
       await new Promise<void>((resolveNext) => setImmediate(resolveNext))
     }
   } finally {

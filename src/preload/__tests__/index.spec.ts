@@ -33,7 +33,10 @@ async function loadBridge(argv: string[]): Promise<Record<string, (...args: neve
   ;(process as unknown as { contextIsolated: boolean }).contextIsolated = true
   await import('../index')
   expect(electron.exposeInMainWorld).toHaveBeenCalledTimes(1)
-  return electron.exposeInMainWorld.mock.calls[0][1] as Record<string, (...args: never[]) => unknown>
+  return electron.exposeInMainWorld.mock.calls[0][1] as Record<
+    string,
+    (...args: never[]) => unknown
+  >
 }
 
 beforeEach(() => {
@@ -59,6 +62,49 @@ describe('preload IPC 桥接', () => {
     )
   })
 
+  /**
+   * 「修改扫描目录」那条通道（2026-10-05）。锁两件事：
+   *   ① 转发打到正确的 channel（新通道最容易出"名字拼错、静默不生效"）；
+   *   ② **`null` 必须能原样过去** —— 它是有意义的值（恢复自动推导），
+   *      不是"没传"，任何"顺手把它换成空数组"的改动都会改变语义。
+   */
+  it('projectSetParentSourceRoots：转发到正确 channel，且 null 原样传过去', async () => {
+    const api = await loadBridge(['electron', '--qianzi-ipc-guard'])
+
+    await api.projectSetParentSourceRoots(
+      'parent-1' as never,
+      ['E:\\搬砖\\无', 'E:\\搬砖\\有'] as never
+    )
+    expect(electron.invoke).toHaveBeenLastCalledWith(
+      'comicType:projectSetParentSourceRoots',
+      'parent-1',
+      ['E:\\搬砖\\无', 'E:\\搬砖\\有']
+    )
+
+    await api.projectSetParentSourceRoots('parent-1' as never, null as never)
+    expect(electron.invoke).toHaveBeenLastCalledWith(
+      'comicType:projectSetParentSourceRoots',
+      'parent-1',
+      null
+    )
+  })
+
+  it('projectReclaimChildPath：转发到正确 channel（认领只换门牌）', async () => {
+    const api = await loadBridge(['electron', '--qianzi-ipc-guard'])
+
+    await api.projectReclaimChildPath(
+      'parent-1' as never,
+      'child-9' as never,
+      'D:\\漫画库\\新名字' as never
+    )
+    expect(electron.invoke).toHaveBeenLastCalledWith(
+      'comicType:projectReclaimChildPath',
+      'parent-1',
+      'child-9',
+      'D:\\漫画库\\新名字'
+    )
+  })
+
   it('带 flag（dev）时，响应式代理参数当场抛错并点名 channel', async () => {
     const api = await loadBridge(['electron', '--qianzi-ipc-guard'])
     const roots = reactive(['E:\\搬砖\\无', 'E:\\搬砖\\有'])
@@ -73,7 +119,12 @@ describe('preload IPC 桥接', () => {
   it('带 flag 时普通参数照常放行', async () => {
     const api = await loadBridge(['electron', '--qianzi-ipc-guard'])
 
-    await api.selfCheckImport({ parentId: 'p1', sourceRoot: 'x', sourceRoots: ['x'], items: [] } as never)
+    await api.selfCheckImport({
+      parentId: 'p1',
+      sourceRoot: 'x',
+      sourceRoots: ['x'],
+      items: []
+    } as never)
     expect(electron.invoke).toHaveBeenCalledWith('comicType:selfCheckImport', {
       parentId: 'p1',
       sourceRoot: 'x',

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { Button as UiButton } from '@renderer/components/ui/button'
 // CompareViewer — split 50/50 panel comparing a JPG preview (left) against
 // the rendered PSD bitmap (right). The PSD is parsed off the main thread via
 // PsdWorkerPool so the UI stays responsive (skeleton shown while parsing).
@@ -7,19 +8,24 @@
 // Inline in the Project view (not a modal). Parent toggles `visible` and
 // listens for the `close` event (button or ESC).
 import { basenameOf } from '@shared/paths'
-import { pairKeyOf } from '@shared/pair'
-import { computed, ref, watch, onMounted, onBeforeUnmount, nextTick } from 'vue'
+import { pagePairKeyOf, exactPairPriority } from '@shared/pair'
+import { computed, ref, shallowRef, watch, onMounted, onBeforeUnmount } from 'vue'
 import ImageViewer from './ImageViewer.vue'
-import { STRIP_BAR_HEIGHT_PX } from './PreviewThumbStrip.vue'
-import { PsdWorkerPool } from '@renderer/workers/psd-pool'
-import {
-  parseZoomPercentInput,
-  zoomIn,
-  zoomOut,
-  zoomPercentLabel
-} from '@renderer/features/project/viewer-zoom'
+import { previewCache, type PreviewLease } from '@renderer/services/previews'
 import type { WorkMode } from '@shared/types'
 import { WORK_MODE_LABELS } from '@shared/modes'
+import TranslationPane from '@renderer/features/translation/TranslationPane.vue'
+import type { TranslationPaneModel } from '@renderer/features/translation/pane-model'
+import type { TranslationPaneMode } from '@shared/translation-review'
+import { isTextEntryTarget } from '@renderer/utils/keyboard-target'
+import { useTranslationSelection } from '@renderer/features/translation/useTranslationSelection'
+import SplitPane from './SplitPane.vue'
+import CompareImagePane from './CompareImagePane.vue'
+import ComparePager from './ComparePager.vue'
+import ViewerImageControls from '@renderer/features/project/ViewerImageControls.vue'
+import type { TranslationCredits } from '@shared/translation-credits'
+import TranslationModeToggle from '@renderer/features/translation/TranslationModeToggle.vue'
+import TranslationAddFrameToggle from '@renderer/features/translation/TranslationAddFrameToggle.vue'
 
 const props = withDefaults(
   defineProps<{
@@ -27,6 +33,10 @@ const props = withDefaults(
     psdPath: string
     folderPath?: string
     visible: boolean
+    actionsTarget?: string
+    markTarget?: string
+    footerTarget?: string
+    revision?: string
     /** Mirrors the project page's active work mode — label only. */
     mode?: WorkMode
     /**
@@ -45,26 +55,150 @@ const props = withDefaults(
     /** 底部缩略图条展开中 → 右下角缩放控件往上让位，别被压住。 */
     thumbStripOpen?: boolean
     /** 「标记后自动翻下一张」（C3）。开关本身持久化在设置里，这里只是显示它的当前值。 */
+    markedDone?: boolean
     advanceAfterMark?: boolean
+    /**
+     * P1「译文对照」：**给了就在右栏显示这一页的译文**（翻译 / 校对模式）。
+     *
+     * 不给（`null` / 缺省）⇒ 右栏仍是 PSD —— 嵌字 / 监修模式与既有用例**一字不改**。
+     * 注意"给了"不等于"有内容"：`not-found` / `error` / 本页无译文都照样显示译文栏
+     * 并说一句事实（用户拍板：右栏身份恒定，不因为有没有 txt 来回跳）。
+     */
+    translation?: TranslationPaneModel | null
+    /**
+     * 译文态的左右分栏宽度（**原图那一栏的百分比**）。由父层从设置里取，
+     * 拖完通过 `update:splitPercent` 报回去落库 —— 组件自己不碰 store。
+     */
+    splitPercent?: number
+    /**
+     * 当前第几张（**1 起**；`0` = 对不上，此时**不显示**页码）。
+     * 由 `views/Project.vue` 从 `pairs` 现算 —— 组件自己不认识"这一话有几张"。
+     */
+    pageNumber?: number
+    /** 这一话一共几张（页码下拉的选项数就是它）。 */
+    pageCount?: number
+    /**
+     * 第 5 批 5d-2：**刚新增**的那一条的瞬时高亮（由宿主持有，这里只透传）。
+     *
+     * ⚠️ 它**不碰** `useTranslationSelection` 的那三态（悬停 / 固定选中 / 编辑态）——
+     * 三态一个字段都没加；这是一个与它们并列的、**只读的**展示状态，
+     * 2 秒后（或用户一动）由**宿主**清掉。
+     */
+    justAddedIndex?: number | null
   }>(),
-  { mode: 'typeset', imageOnly: false, playing: false, thumbStripOpen: false, advanceAfterMark: false }
+  {
+    mode: 'typeset',
+    imageOnly: false,
+    playing: false,
+    thumbStripOpen: false,
+    advanceAfterMark: false,
+    translation: null,
+    splitPercent: 66,
+    pageNumber: 0,
+    pageCount: 0,
+    justAddedIndex: null
+  }
 )
 
 // Same wording rule as the thumbnail cards: 去嵌字 / 去翻译 / 去校对 / 去监修.
 const actionLabel = computed(() => `去${WORK_MODE_LABELS[props.mode]}`)
 
+// ── P1 译文对照：右栏身份 + 两侧共用的高亮编号 ────────────────────────────────
+/**
+ * 右栏显示"译文"还是"PSD" —— **只看父层给没给译文模型**。
+ * 模式判断（翻译 / 校对才给）在 `views/Project.vue`，这里不认识模式 —— 组件保持哑。
+ */
+const showTranslationPane = computed(() => props.translation !== null)
+// 三个交互状态（悬停 / 固定选中 / 编辑态）全部收进 composable —— 这里只拿到六个动作
+// 与两个只读派生值，**不再直接持有/写任何 ref**（方案 A，2026-10-07）。
+// 为什么收进去：见 useTranslationSelection.ts 文件头（上一轮"退出时顺手清选中"是局部补丁，
+// 没盖住"再双击同一行"那条退出路径，而且会把亲手点过的选中一起误清）。
+const {
+  highlightedIndex: highlightedTranslationIndex,
+  editingIndex: editingTranslationIndex,
+  setHover,
+  pick: selectTranslation,
+  enterEdit,
+  exitEdit,
+  resetForPage,
+  resetForModeChange
+} = useTranslationSelection()
+
+/**
+ * 双击某一条：进编辑**只开编辑器、不建立固定选中**；再双击同一行 = 收起，走统一的 `exitEdit`。
+ *
+ * ⚠️ 判断"进还是出"在这里做，但**两条路都不碰固定选中** —— 固定选中只有 `pick`（单击）能改。
+ */
+function pickTranslation(index: number): void {
+  selectTranslation(index)
+  scrollTranslationRowIntoView(index)
+}
+
+const editorAnchor = shallowRef<{ getBoundingClientRect: () => DOMRect } | null>(null)
+function onAnchorEdit(index: number, anchor: HTMLElement): void {
+  const bounds = anchor.getBoundingClientRect()
+  editorAnchor.value = { getBoundingClientRect: () => bounds }
+  enterEdit(index)
+}
+function onEditTranslation(index: number): void {
+  editorAnchor.value = null
+  if (editingTranslationIndex.value === index) {
+    exitEdit()
+  } else {
+    enterEdit(index)
+  }
+}
+
+/** 编辑器收起（失焦 / Esc / 点栏外）⇒ 只关编辑态，**不动固定选中**（方案 A）。 */
+function onCloseEditor(): void {
+  editorAnchor.value = null
+  exitEdit()
+}
+
+/**
+ * 第 5 批 5d-2：右栏译文栏的句柄 —— **只用到"把某一行滚进视野"这一件事**
+ * （见 `TranslationPane` 的 `defineExpose`；它内部复用自己那一个 `scrollRowIntoView`，
+ * 所以这里**没有**第二个滚动实现）。
+ *
+ * 为什么由这一层转发而不是宿主直接拿：宿主不认识"右栏是哪个组件实例"，
+ * 而这一层本来就同时握着原图栏与译文栏。
+ */
+const translationPaneRef = ref<InstanceType<typeof TranslationPane> | null>(null)
+
+function scrollTranslationRowIntoView(index: number | null): void {
+  translationPaneRef.value?.scrollToIndex(index)
+}
+
+defineExpose({ scrollTranslationRowIntoView })
+
+// 翻页就把高亮与编辑器都清掉：编号是"这一页的第几条"，跨页保留会指到另一句话上
+watch(
+  () => props.psdPath,
+  () => resetForPage()
+)
+
+/**
+ * 第 4 批修：**切档位（翻译 / 校对）也把编辑器收掉**；2026-10-07 方案 A 追加：**固定选中也一起清**
+ * （两档行长得不一样，跨档保留的编号会指错）。悬停是临时的、自我修正，不用管。
+ */
+watch(
+  () => props.translation?.mode ?? null,
+  () => resetForModeChange()
+)
+
 /** Image-only entries have no PSD side, so the header must not promise one. */
 const headerLabel = computed(() => (props.imageOnly ? '图片预览' : '对照视图'))
 
 /** 与工具栏同一套文案：标记监修 / 标记未监修。 */
-const markDoneLabel = computed(() => `标记${WORK_MODE_LABELS[props.mode]}`)
-const markPendingLabel = computed(() => `标记未${WORK_MODE_LABELS[props.mode]}`)
+const markLabel = computed(() => `标记${props.markedDone ? '未' : '已'}${WORK_MODE_LABELS[props.mode]}`)
 
 const emit = defineEmits<{
   (e: 'close'): void
   (e: 'openPsd'): void
   (e: 'previous'): void
   (e: 'next'): void
+  /** 译文态拖完分隔条：把原图栏的新宽度（百分比）交给宿主落库。 */
+  (e: 'update:splitPercent', percent: number): void
   /** 标记**当前显示的这张**。 */
   (e: 'mark', status: 'done' | 'pending'): void
   /**
@@ -76,9 +210,73 @@ const emit = defineEmits<{
   (e: 'stopPlayback'): void
   /** 用户点了页头那枚「标记后下一张」开关（由宿主写进设置）。 */
   (e: 'update:advanceAfterMark', value: boolean): void
+  /**
+   * 译文编辑（P2）：这一栏自己不落地 —— 它不认识"草稿 / 保存去哪"，一律交给宿主。
+   * 这样"只有一处会写用户文件"这条纪律在组件层也是成立的。
+   */
+  (e: 'update:fullscreen', value: boolean): void
+  (e: 'translationEditText', index: number, text: string, done?: (saved: boolean) => void): void
+  (e: 'translationEditGroup', index: number, groupName: string): void
+  (e: 'translationUndo'): void
+  (e: 'translationDiscard'): void
+  (e: 'translationSave'): void
+  (e: 'translationCredits', credits: TranslationCredits, done: (error?: string) => void): void
+  /** P2-c：拖完锚点（归一化坐标）。 */
+  (e: 'translationMoveAnchor', index: number, x: number, y: number): void
+  /**
+   * 第 5 批：**在原图上新增一个条目**（分组名 + 归一化坐标）——
+   * 落在哪一条、写进哪份 txt 全由宿主决定，这一层只报"用户在图上点了哪儿"。
+   */
+  (e: 'translationAddFrame', groupName: string, x: number, y: number): void
+  /**
+   * 第 5 批 5d-2：页头那枚「新增框」开关被点了。
+   *
+   * 状态在**宿主**（`views/Project.vue` 的 ref）—— 这一层只把"用户把它开到/关到了什么"报上去，
+   * 与人家的 `translationMode` 同一条写法（组件不持有跨会话的状态）。
+   */
+  (e: 'translationAddFrameMode', value: boolean): void
+  /**
+   * 第 5 批 5e：**删除一条译文**（两处入口共用这一个事件：右栏行菜单第三项 / 锚点右键）。
+   *
+   * 这一层只报"要删第几条"，写盘 / 挪记录 / 草稿键重映射全在宿主
+   *（与 `translationAddFrame` 同一条分工：组件不认识"能不能删、怎么删"）。
+   */
+  (e: 'translationDeleteEntry', index: number): void
+  /** 第 2 批：用户改了译文栏档位（翻译 / 校对）—— 由宿主记住（本会话内不再跟随四模式）。 */
+  (e: 'translationMode', mode: TranslationPaneMode): void
+  /** 第 2 批：写某一条的校对理由（只进数据库，不碰 txt）。 */
+  (e: 'translationEditReason', index: number, reason: string): void
+  /** 第 2 批：点「导出校对记录…」（弹另存为那件事由宿主做）。 */
+  (e: 'translationExportReviews'): void
+  /** 第 3 批：点「另存…」—— 把当前翻译另存到用户选的位置（宿主去做）。 */
+  (e: 'translationSaveAs'): void
+  /** 第 4 批：点行尾 `✕` 或右键菜单第一项 —— 撤销校对（把原文写回 txt + 删记录）。 */
+  (e: 'translationUnreview', index: number): void
+  /** 第 4 批：右键菜单第二项 —— 只删记录（保留现在的译文）。 */
+  (e: 'translationDropReview', index: number): void
+  /** 从页码下拉选了第几张（1 起）；父层复用胶片条那条跳转。 */
+  (e: 'pickPage', pageNumber: number): void
 }>()
 
 // --- State -----------------------------------------------------------------
+/**
+ * **PSD 栏那一枚「下一页」的显隐区**（2026-10-07 用户拍板）。
+ *
+ * 用户原话："在 PSD 栏右边新增一个显隐区"—— 所以它与原图栏那一套**各自独立**：
+ * 鼠标进 PSD 画面 ⇒ 只亮它；鼠标进原图栏看图区 ⇒ 只亮原图栏那对。
+ *
+ * ⚠️ **已知边界（如实记，不改）**：这两枚"下一页"各自绑在自己的显隐区上 ⇒
+ * 从原图往最右边挪鼠标时会**跨出一个区、进另一个区**，中间那一段它会淡出并变
+ * `pointer-events-none`（0.2s 内点不中）。用户明确选了"两个独立显隐区"这个口径，
+ * 所以先按他说的做；真机觉得"点不到"时再谈（备选：把这两个区合成"整个画面区"）。
+ */
+const psdHintVisible = ref(false)
+
+/** PSD 栏那一枚只会是「下一页」，所以这里也照样写全（组件是通用的）。 */
+function onPsdPagerGo(kind: 'previous' | 'next'): void {
+  if (kind === 'previous') emit('previous')
+  else emit('next')
+}
 const jpgUrl = ref<string | null>(null)
 const jpgUnavailable = ref(false)
 const psdUrl = ref<string | null>(null)
@@ -92,45 +290,28 @@ let sourceSeq = 0
 // 语义 = 相对各自"适应窗口"的倍数（适应窗口 = 100%）—— 于是对照状态一个数字就能描述两栏
 // （两栏像素尺寸常常不同，绝对像素比是没法共用一个数字的）。
 const zoomRatio = ref(1)
-const zoomPercent = computed(() => zoomPercentLabel(zoomRatio.value))
-const zoomInputOpen = ref(false)
-const zoomDraft = ref('')
-const zoomInputRef = ref<HTMLInputElement | null>(null)
-
-function onZoomIn(): void {
-  zoomRatio.value = zoomIn(zoomRatio.value)
+const sharedPan = ref({ x: 0, y: 0 })
+watch(zoomRatio, ratio => { if (ratio <= 1) sharedPan.value = { x: 0, y: 0 } })
+watch([() => props.psdPath, () => props.jpgPath, () => props.mode, () => props.translation?.mode], () => { zoomRatio.value = 1; sharedPan.value = { x: 0, y: 0 } })
+const fullscreen = ref(false)
+const fullscreenError = ref('')
+function syncFullscreen(): void { fullscreen.value = !!document.fullscreenElement; emit('update:fullscreen', fullscreen.value) }
+async function toggleFullscreen(): Promise<void> {
+  try {
+    fullscreenError.value = ''
+    if (document.fullscreenElement) await document.exitFullscreen()
+    else await document.documentElement.requestFullscreen()
+    syncFullscreen()
+  } catch { fullscreenError.value = '无法切换全屏，请重试' }
 }
-
-function onZoomOut(): void {
-  zoomRatio.value = zoomOut(zoomRatio.value)
+let lastPageWheel = -Infinity
+function onPageWheel(delta: number): void {
+  const now = performance.now()
+  if (!delta || now - lastPageWheel < 180) return
+  lastPageWheel = now
+  if (delta > 0) emit('next')
+  else emit('previous')
 }
-
-/** 「一键回默认」= 适应窗口 = 100%（和双击画面同一件事）。 */
-function onZoomFit(): void {
-  zoomRatio.value = 1
-}
-
-function openZoomInput(): void {
-  zoomDraft.value = String(Math.round(zoomRatio.value * 100))
-  zoomInputOpen.value = true
-  void nextTick(() => {
-    zoomInputRef.value?.focus()
-    zoomInputRef.value?.select()
-  })
-}
-
-/** 看不懂的输入（空、abc、负数）就当没发生 —— 界面保持原值，不静默改成别的数。 */
-function commitZoomInput(): void {
-  const parsed = parseZoomPercentInput(zoomDraft.value)
-  if (parsed !== null) zoomRatio.value = parsed
-  zoomInputOpen.value = false
-}
-
-function cancelZoomInput(): void {
-  zoomDraft.value = ''
-  zoomInputOpen.value = false
-}
-
 /**
  * 「这一张显示好了」——自动播放的节拍起点。
  *
@@ -138,7 +319,14 @@ function cancelZoomInput(): void {
  * （失败的页面也必须让播放往下走，否则一张坏 PSD 就把播放钉死了）。
  */
 const jpgSettled = computed(() => jpgUrl.value !== null || jpgUnavailable.value)
-const psdSettled = computed(() => props.imageOnly || psdUrl.value !== null || psdError.value)
+const psdSettled = computed(
+  () =>
+    props.imageOnly ||
+    // 右栏换成译文时根本不解析 PSD，所以"就绪"不能等 PSD（否则自动播放会一直等下去）
+    showTranslationPane.value ||
+    psdUrl.value !== null ||
+    psdError.value
+)
 watch(
   () => props.visible && jpgSettled.value && psdSettled.value,
   (ready) => {
@@ -146,20 +334,24 @@ watch(
   }
 )
 
-// One pool per CompareViewer instance; destroyed on unmount to free workers.
-const pool = new PsdWorkerPool()
-
 const psdFilename = computed(() => basename(props.psdPath))
-
-interface BitmapSummary {
-  width: number
-  height: number
-  sampledPixels: number
-  visibleSamples: number
-  alphaMin: number
-  alphaMax: number
-  rgbMin: number
-  rgbMax: number
+let sourceController = new AbortController()
+const leases = new Set<PreviewLease>()
+function releaseSources(): void {
+  sourceController.abort()
+  sourceController = new AbortController()
+  for (const lease of leases) lease.release()
+  leases.clear()
+}
+async function previewUrl(path: string, raster: boolean, seq: number): Promise<string> {
+  if (seq !== sourceSeq) throw new DOMException('预览已取消', 'AbortError')
+  const lease = await previewCache.acquire(path, raster, sourceController.signal)
+  if (seq !== sourceSeq) {
+    lease.release()
+    throw new DOMException('预览已取消', 'AbortError')
+  }
+  leases.add(lease)
+  return lease.url
 }
 
 function basename(absPath: string): string {
@@ -182,7 +374,7 @@ function stemKey(absPath: string): string {
   // 规则本身在 `@shared/pair`（2026-10-01 P2 收编）—— 扫描器那边走的是同一个函数。
   // ⚠️ 别再往这里写规则：两侧的配对键必须永远同源，否则"侧栏配好的对"与
   //    这里挑出来的图会不是同一张（标记按"当前显示的那张"落库，会落到错的页上）。
-  return pairKeyOf(absPath)
+  return pagePairKeyOf(absPath)
 }
 
 function normalizePath(absPath: string): string {
@@ -238,69 +430,8 @@ function pickMatchingImage(
   const candidates = imageFiles.filter((imagePath) => stemKey(imagePath) === psdStem)
   if (candidates.length === 0) return undefined
   return [...candidates].sort(
-    (a, b) => imageRank(rootFolder, psdPath, a) - imageRank(rootFolder, psdPath, b)
+    (a, b) => exactPairPriority(psdPath, a) - exactPairPriority(psdPath, b) || imageRank(rootFolder, psdPath, a) - imageRank(rootFolder, psdPath, b) || a.localeCompare(b)
   )[0]
-}
-
-// --- ImageBitmap → string URL ---------------------------------------------
-// ImageViewer accepts a string src, so we rasterise the ImageBitmap onto a
-// canvas and produce a data URL. This keeps ImageViewer unchanged (task 3.5).
-function summarizeBitmapCanvas(
-  ctx: CanvasRenderingContext2D,
-  width: number,
-  height: number
-): BitmapSummary {
-  const { data } = ctx.getImageData(0, 0, width, height)
-  const maxSamples = 4000
-  const pixelCount = width * height
-  const step = Math.max(1, Math.floor(pixelCount / maxSamples))
-  let sampledPixels = 0
-  let visibleSamples = 0
-  let alphaMin = 255
-  let alphaMax = 0
-  let rgbMin = 255
-  let rgbMax = 0
-
-  for (let pixel = 0; pixel < pixelCount; pixel += step) {
-    const i = pixel * 4
-    const r = data[i]
-    const g = data[i + 1]
-    const b = data[i + 2]
-    const a = data[i + 3]
-    sampledPixels++
-    if (a !== 0) visibleSamples++
-    alphaMin = Math.min(alphaMin, a)
-    alphaMax = Math.max(alphaMax, a)
-    rgbMin = Math.min(rgbMin, r, g, b)
-    rgbMax = Math.max(rgbMax, r, g, b)
-  }
-
-  return { width, height, sampledPixels, visibleSamples, alphaMin, alphaMax, rgbMin, rgbMax }
-}
-
-function bitmapToUrl(bitmap: ImageBitmap): { url: string; summary: BitmapSummary | null } {
-  if (bitmap.width <= 0 || bitmap.height <= 0) {
-    bitmap.close?.()
-    throw new Error('Rendered PSD bitmap has invalid dimensions')
-  }
-
-  const canvas = document.createElement('canvas')
-  canvas.width = bitmap.width
-  canvas.height = bitmap.height
-  const ctx = canvas.getContext('2d')
-  if (!ctx) throw new Error('Canvas 2D context unavailable')
-  ctx.drawImage(bitmap, 0, 0)
-  bitmap.close?.()
-
-  let summary: BitmapSummary | null = null
-  if (typeof ctx.getImageData === 'function') {
-    summary = summarizeBitmapCanvas(ctx, canvas.width, canvas.height)
-    if (summary.visibleSamples === 0) {
-      throw new Error('Rendered PSD bitmap is fully transparent')
-    }
-  }
-
-  return { url: canvas.toDataURL(), summary }
 }
 
 function formatError(err: unknown): { message: string; stack?: string } {
@@ -405,7 +536,7 @@ async function loadJpg(
       imagePath,
       resolvedByScan
     })
-    const url = await window.comicType.readFileDataURL(imagePath)
+    const url = await previewUrl(imagePath, true, seq)
     if (seq !== sourceSeq || psdPath !== props.psdPath) return
     jpgUrl.value = url
     void writePsdLog('compare-viewer', 'info', 'Matching image load success', {
@@ -415,11 +546,12 @@ async function loadJpg(
       dataUrlLength: jpgUrl.value.length
     })
   } catch (err) {
+    if (seq !== sourceSeq) return
     if (!resolvedByScan) {
       const rescannedPath = await resolveMatchingImagePath(psdPath, folderPath)
       if (rescannedPath && normalizePath(rescannedPath) !== normalizePath(imagePath)) {
         try {
-          const url = await window.comicType.readFileDataURL(rescannedPath)
+          const url = await previewUrl(rescannedPath, true, seq)
           if (seq !== sourceSeq || psdPath !== props.psdPath) return
           jpgUnavailable.value = false
           jpgUrl.value = url
@@ -465,18 +597,13 @@ async function loadPsd(
       psdPath,
       imagePath: jpgPath
     })
-    const buffer = await window.comicType.readFileBuffer(psdPath)
-    const byteLength = buffer.byteLength
-    const bitmap = await pool.parsePsd(buffer)
-    const { url, summary } = bitmapToUrl(bitmap)
+    const url = await previewUrl(psdPath, false, seq)
     if (seq !== sourceSeq || psdPath !== props.psdPath) return
     psdUrl.value = url
     psdUrlPath.value = psdPath
     void writePsdLog('compare-viewer', 'info', 'PSD render success', {
       psdPath,
       imagePath: jpgPath,
-      byteLength,
-      summary,
       dataUrlLength: url.length
     })
   } catch (err) {
@@ -496,6 +623,7 @@ async function loadPsd(
 
 function resetState(): void {
   sourceSeq++
+  releaseSources()
   jpgUrl.value = null
   jpgUnavailable.value = false
   psdUrl.value = null
@@ -503,13 +631,13 @@ function resetState(): void {
   psdLoading.value = false
   psdError.value = false
   // 退出预览 = 一切归零：下次进来是 100%（适应窗口）。
+  // （倍数输入框那点状态住在 ViewerZoomControls 里，随组件一起走，这里不用管。）
   zoomRatio.value = 1
-  zoomInputOpen.value = false
-  zoomDraft.value = ''
 }
 
 function reloadVisibleSources(): void {
   const seq = ++sourceSeq
+  releaseSources()
   const jpgPath = props.jpgPath
   const psdPath = props.psdPath
   const folderPath = props.folderPath
@@ -522,13 +650,22 @@ function reloadVisibleSources(): void {
   void loadJpg(seq, jpgPath, psdPath, folderPath)
   // imageOnly 条目的 psdPath 其实是图片路径：解析它只会白耗 worker、
   // 并把右栏变成“PSD解析失败”。直接跳过。
-  if (!props.imageOnly) void loadPsd(seq, psdPath, jpgPath)
+  // 右栏换成"译文"时同理：这一栏根本不显示 PSD，解析它纯属白烧 worker。
+  if (!props.imageOnly && !showTranslationPane.value) void loadPsd(seq, psdPath, jpgPath)
 }
 
 // --- Watchers --------------------------------------------------------------
 // Trigger loads when the panel becomes visible or the compared files change.
 watch(
-  () => [props.visible, props.jpgPath, props.psdPath, props.folderPath, props.imageOnly] as const,
+  () =>
+    [
+      props.visible,
+      props.jpgPath,
+      props.psdPath,
+      props.folderPath,
+      props.imageOnly,
+      props.revision
+    ] as const,
   (v) => {
     if (v[0]) {
       reloadVisibleSources()
@@ -543,37 +680,49 @@ watch(
 function onKeydown(e: KeyboardEvent): void {
   if (!props.visible) return
   if (e.key === 'Escape') {
+    if (fullscreen.value || document.fullscreenElement) { e.preventDefault(); e.stopImmediatePropagation(); void toggleFullscreen(); return }
     // 播放中 Esc = 先停播放（再按一次才退出预览）。
     // 不在播放时保持老行为：Esc 直接关窗 —— 既有用例锁着这一条。
     if (props.playing) emit('stopPlayback')
     else emit('close')
-  } else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') {
-    e.preventDefault()
-    emit('previous')
-  } else if (e.key === 'ArrowRight' || e.key === 'ArrowDown') {
-    e.preventDefault()
-    emit('next')
+    return
   }
+  const isArrow =
+    e.key === 'ArrowLeft' || e.key === 'ArrowUp' || e.key === 'ArrowRight' || e.key === 'ArrowDown'
+  if (!isArrow) return
+  /**
+   * ⚠️ 2026-10-06（P1.1）：**先看焦点在不在输入框里**。
+   *
+   * 这条监听挂在 `window` 上，原来完全不管事件目标 —— 于是在右下角那个缩放输入框里
+   * 按 ←/→ 会翻页（§12 登记在册、一直没修的那个老毛病）。翻页入口这一轮正好要改，
+   * 一次修掉。判据走 `utils/keyboard-target`（与视图的撤销热键同一处，不各写一份）。
+   */
+  if (isTextEntryTarget(e.target)) return
+  e.preventDefault()
+  if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') emit('previous')
+  else emit('next')
 }
 
-function onWheel(e: WheelEvent): void {
-  if (e.ctrlKey || e.metaKey) return
-  if (Math.abs(e.deltaY) < 8 && Math.abs(e.deltaX) < 8) return
-  e.preventDefault()
-  if (e.deltaY > 0 || e.deltaX > 0) {
-    emit('next')
-  } else {
-    emit('previous')
-  }
-}
+/**
+ * 2026-10-06（P1.1）：这里原先有一条"滚轮 = 翻页"，**已撤掉**。
+ * 用户拍板：滚轮整体让给缩放（普通与 Ctrl 都缩放），翻页改走左右中段的悬停按钮
+ * + 键盘 ←/→ + 底部胶片条。
+ * ⚠️ 撤掉它顺带修了一个没人报过的毛病：那条监听挂在**整个对照视图**上并 preventDefault，
+ * 于是滚轮悬在右栏译文清单上时**滚不动清单**（只会翻页）。现在滚轮落在哪就归谁。
+ */
 
 onMounted(() => {
   window.addEventListener('keydown', onKeydown)
+  document.addEventListener('fullscreenchange', syncFullscreen)
 })
 
 onBeforeUnmount(() => {
   window.removeEventListener('keydown', onKeydown)
-  pool.destroy()
+  document.removeEventListener('fullscreenchange', syncFullscreen)
+  emit('update:fullscreen', false)
+  if (fullscreen.value && document.fullscreenElement) void document.exitFullscreen()
+  sourceSeq++
+  releaseSources()
 })
 
 function onClose(): void {
@@ -601,100 +750,227 @@ function onMark(status: 'done' | 'pending'): void {
     v-if="visible"
     data-testid="compare-viewer"
     class="flex h-full w-full flex-col bg-app-bg text-text-primary"
-    @wheel="onWheel"
   >
-    <!-- Header bar -->
-    <div class="flex items-center justify-between border-b border-border px-4 py-2">
-      <div class="flex min-w-0 items-center gap-3">
-        <span class="text-sm font-bold text-accent">{{ headerLabel }}</span>
-        <span class="truncate text-sm font-bold text-text-primary">{{ psdFilename }}</span>
-      </div>
-      <div class="flex shrink-0 items-center gap-2">
-        <button
-          type="button"
-          class="rounded-badge bg-accent px-3 py-1.5 text-sm font-medium text-text-on-accent transition-colors hover:bg-primary-hover active:bg-primary-active"
-          data-testid="compare-mark-done"
-          @click="onMark('done')"
+    <Teleport defer :to="markTarget || 'body'" :disabled="!markTarget">
+        <UiButton :variant="markedDone ? 'outline' : 'default'" size="sm" data-testid="compare-mark-toggle" :aria-pressed="!!markedDone" :title="markedDone ? '点击标记为未完成' : '点击标记为已完成'" @click="onMark(markedDone ? 'pending' : 'done')">{{ markLabel }}</UiButton>
+    </Teleport>
+    <Teleport defer :to="actionsTarget || 'body'" :disabled="!actionsTarget">
+      <div class="ml-auto flex flex-wrap items-center justify-end gap-2" data-testid="compare-actions">
+
+        <UiButton variant="outline" size="sm"
+          class="transition-colors"
+          @click="onOpenPsd"
         >
-          {{ markDoneLabel }}
-        </button>
-        <button
-          type="button"
-          class="rounded-badge border border-primary-border bg-primary-soft px-3 py-1.5 text-sm font-medium text-accent transition-colors hover:bg-primary-soft-hover"
-          data-testid="compare-mark-pending"
-          @click="onMark('pending')"
-        >
-          {{ markPendingLabel }}
-        </button>
+          {{ actionLabel }}
+        </UiButton>
         <!--
           「标记后下一张」（C3）：做一张张过的 QC 时省掉一次方向键。
           只用图标 —— 页头本来就有四个按钮，再加一个带字的会把它们挤变形
           （有 compare-viewer-header 那组截图盯着）。
         -->
-        <button
+        <UiButton variant="outline" size="sm"
           type="button"
-          class="flex h-8 w-8 shrink-0 items-center justify-center rounded-badge border transition-colors"
+          class="flex w-8 shrink-0 items-center justify-center transition-colors"
           :class="
             advanceAfterMark
               ? 'border-primary-border bg-primary-soft text-accent'
               : 'border-border bg-card-bg text-text-secondary hover:bg-card-bg-hover hover:text-text-primary'
           "
-          :title="advanceAfterMark ? '标记后下一张：开（点一下关掉）' : '标记后下一张：关（点一下打开）'"
+          :title="
+            advanceAfterMark ? '标记后下一张：开（点一下关掉）' : '标记后下一张：关（点一下打开）'
+          "
           :aria-pressed="advanceAfterMark"
           data-testid="compare-advance-toggle"
           @click="emit('update:advanceAfterMark', !advanceAfterMark)"
         >
-          <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+          <svg
+            class="h-4 w-4"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.6"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          >
             <line x1="4" y1="12" x2="14" y2="12" />
             <polyline points="10 7 15 12 10 17" />
             <line x1="19" y1="5" x2="19" y2="19" />
           </svg>
-        </button>
+        </UiButton>
         <span class="mx-0.5 h-4 w-px shrink-0 bg-border" aria-hidden="true" />
-        <button
-          class="rounded-badge border border-border bg-card-bg px-3 py-1.5 text-sm font-medium text-text-secondary transition-colors hover:bg-card-bg-hover hover:text-text-primary active:bg-card-bg-pressed"
-          @click="onOpenPsd"
-        >
-          {{ actionLabel }}
-        </button>
-        <button
-          class="rounded-badge bg-accent px-3 py-1 text-sm font-bold text-text-on-accent transition-colors hover:bg-primary-hover active:bg-primary-active"
+
+        <UiButton variant="default" size="sm"
+          class="transition-colors"
           @click="onClose"
         >
           退出预览
-        </button>
+        </UiButton>
       </div>
-    </div>
+    </Teleport>
 
-    <!-- Split 50/50 panel — image-only entries get a single full-width pane. -->
+
+
+    <!-- Split panel — image-only entries get a single full-width pane.
+         译文态走 SplitPane（可拖拽调宽，默认 66/34）；PSD 态与只有一栏时保持原来的 flex 布局。 -->
     <div class="relative flex min-h-0 flex-1">
-      <div class="flex min-h-0 flex-1">
-        <!-- Left: JPG preview -->
-        <div class="flex flex-1 flex-col" :class="imageOnly ? '' : 'border-r border-border'">
-          <div class="border-b border-border px-3 py-1 text-xs text-text-secondary">原图</div>
-          <div class="min-h-0 flex-1">
-            <ImageViewer
-              v-if="jpgUrl"
-              :src="jpgUrl"
-              :zoom-ratio="zoomRatio"
-              @update:zoom-ratio="zoomRatio = $event"
-            />
-            <div v-else class="flex h-full items-center justify-center text-sm text-text-tertiary">
-              无同名图片
+      <!-- 译文态：左原图 / 右译文，中间一条可拖拽的分隔条 -->
+      <SplitPane
+        v-if="showTranslationPane"
+        class="min-w-0 flex-1"
+        :primary-percent="splitPercent"
+        :min-primary-window-ratio="0.3"
+        :min-secondary-px="240"
+        aria-label="调整原图与译文宽度"
+        @update:primary-percent="emit('update:splitPercent', $event)"
+      >
+        <template #primary>
+          <CompareImagePane
+            class="h-full"
+            :jpg-url="jpgUrl"
+            :zoom-ratio="zoomRatio"
+            :pan="sharedPan"
+            @update:pan="sharedPan = $event"
+            @page-wheel="onPageWheel"
+            :translation="translation"
+            :active-index="highlightedTranslationIndex"
+            :page-number="pageNumber"
+            :page-count="pageCount"
+            :add-mode="translation?.addFrameMode ?? false"
+            @update:zoom-ratio="zoomRatio = $event"
+            @pick="pickTranslation"
+            @edit="onAnchorEdit"
+            @hover="setHover"
+            @translation-move-anchor="
+              (index: number, x: number, y: number) => emit('translationMoveAnchor', index, x, y)
+            "
+            @translation-add-frame="
+              (groupName: string, x: number, y: number) =>
+                emit('translationAddFrame', groupName, x, y)
+            "
+            @translation-mode="(mode: TranslationPaneMode) => emit('translationMode', mode)"
+            @update:add-frame-mode="(value: boolean) => emit('translationAddFrameMode', value)"
+            @translation-delete-entry="(index: number) => emit('translationDeleteEntry', index)"
+            @pick-page="emit('pickPage', $event)"
+            @previous="emit('previous')"
+            @next="emit('next')"
+          >
+            <template #toolbar>
+      <span class="shrink-0 text-sm font-semibold text-accent">{{ headerLabel }}</span>
+      <span class="min-w-0 max-w-[30%] truncate text-sm font-semibold" :title="psdFilename">{{ psdFilename }}</span>
+      <TranslationModeToggle v-if="translation" :mode="translation.mode" @update:mode="emit('translationMode', $event)" />
+      <TranslationAddFrameToggle v-if="translation" :add-frame-mode="translation.addFrameMode ?? false" @update:add-frame-mode="emit('translationAddFrameMode', $event)" />
+
+              <ViewerImageControls :page-number="pageNumber" :page-count="pageCount" :zoom-ratio="zoomRatio" :fullscreen="fullscreen" :fullscreen-error="fullscreenError" @pick-page="emit('pickPage', $event)" @update:zoom-ratio="zoomRatio = $event" @fullscreen="toggleFullscreen" />
+            </template>
+          </CompareImagePane>
+        </template>
+        <template #secondary>
+          <TranslationPane
+            ref="translationPaneRef"
+            :loading="translation?.loading ?? false"
+            :result="translation?.result ?? null"
+            :entry="translation?.entry ?? null"
+            :groups="translation?.groups ?? []"
+            :active-index="highlightedTranslationIndex"
+            :dirty="translation?.dirty ?? false"
+            :changed-count="translation?.changedCount ?? 0"
+            :saving="translation?.saving ?? false"
+            :notice="translation?.notice ?? ''"
+            :changed-indices="translation?.changedIndices ?? []"
+            :editing-index="editingTranslationIndex"
+            :editor-anchor="editorAnchor"
+            :group-overrides="translation?.groupOverrides ?? {}"
+            :mode="translation?.mode ?? 'translate'"
+            :reviews="translation?.reviews ?? {}"
+            :page-reviewed="translation?.pageReviewed ?? false"
+            :review-count="translation?.reviewCount ?? 0"
+            :can-undo-saved="translation?.canUndoSaved ?? false"
+            :add-frame-mode="translation?.addFrameMode ?? false"
+            :just-added-index="justAddedIndex"
+            @pick="pickTranslation"
+            @hover="setHover"
+            @edit="onEditTranslation"
+            @edit-text="(index: number, text: string, done?: (saved: boolean) => void) => emit('translationEditText', index, text, done)"
+            @edit-group="
+              (index: number, groupName: string) => emit('translationEditGroup', index, groupName)
+            "
+            @update:mode="(mode: TranslationPaneMode) => emit('translationMode', mode)"
+            @update:add-frame-mode="(value: boolean) => emit('translationAddFrameMode', value)"
+            @delete-entry="(index: number) => emit('translationDeleteEntry', index)"
+            @edit-reason="
+              (index: number, reason: string) => emit('translationEditReason', index, reason)
+            "
+            @export-reviews="emit('translationExportReviews')"
+            @save-as="emit('translationSaveAs')"
+            @unreview="(index: number) => emit('translationUnreview', index)"
+            @drop-review="(index: number) => emit('translationDropReview', index)"
+            @close-editor="onCloseEditor"
+            @undo="emit('translationUndo')"
+            @discard="emit('translationDiscard')"
+            @save="emit('translationSave')"
+          />
+        </template>
+      </SplitPane>
+
+      <!-- 其余形态：PSD 对照（50/50）或只有一栏 -->
+      <div v-else class="flex min-h-0 min-w-0 flex-1 flex-col">
+            <div class="flex min-h-11 shrink-0 flex-wrap items-center gap-2 border-b border-border px-3 py-1" data-testid="compare-image-pane-header">
+      <span class="shrink-0 text-sm font-semibold text-accent">{{ headerLabel }}</span>
+      <span class="min-w-0 max-w-[30%] truncate text-sm font-semibold" :title="psdFilename">{{ psdFilename }}</span>
+      <TranslationModeToggle v-if="translation" :mode="translation.mode" @update:mode="emit('translationMode', $event)" />
+      <TranslationAddFrameToggle v-if="translation" :add-frame-mode="translation.addFrameMode ?? false" @update:add-frame-mode="emit('translationAddFrameMode', $event)" />
+
+              <ViewerImageControls :page-number="pageNumber" :page-count="pageCount" :zoom-ratio="zoomRatio" :fullscreen="fullscreen" :fullscreen-error="fullscreenError" @pick-page="emit('pickPage', $event)" @update:zoom-ratio="zoomRatio = $event" @fullscreen="toggleFullscreen" />
             </div>
-          </div>
-        </div>
+        <div class="flex min-h-0 min-w-0 flex-1">
+        <!-- Left: JPG preview -->
+        <CompareImagePane
+          class="min-w-0 basis-0 flex-1"
+          :class="imageOnly ? '' : 'border-r border-border'"
+          :jpg-url="jpgUrl"
+          :zoom-ratio="zoomRatio"
+            :pan="sharedPan"
+            @update:pan="sharedPan = $event"
+            @page-wheel="onPageWheel"
+          :translation="translation"
+          :active-index="highlightedTranslationIndex"
+          :page-number="pageNumber"
+          :page-count="pageCount"
+          :show-next-pager="imageOnly"
+          @update:zoom-ratio="zoomRatio = $event"
+          @pick="pickTranslation"
+            @edit="onAnchorEdit"
+          @hover="setHover"
+          @translation-move-anchor="
+            (index: number, x: number, y: number) => emit('translationMoveAnchor', index, x, y)
+          "
+          @pick-page="emit('pickPage', $event)"
+          @previous="emit('previous')"
+          @next="emit('next')"
+        >
+
+          </CompareImagePane>
 
         <!-- Right: PSD rendering via worker (skipped entirely for image-only) -->
-        <div v-if="!imageOnly" class="flex flex-1 flex-col">
-          <div class="border-b border-border px-3 py-1 text-xs text-text-secondary">PSD</div>
-          <div class="min-h-0 flex-1">
+        <div v-if="!imageOnly" class="flex min-w-0 basis-0 flex-1 flex-col">
+          <!--
+            ⚠️ `relative` 是这一枚「下一页」的定位祖先（用户拍板：贴在 **PSD 栏的画面容器右缘**）——
+            少了它就会被算到更外层、离画面右缘远一大截（本轮正是为这个加的）。
+          -->
+          <div
+            class="relative min-h-0 flex-1"
+            data-testid="compare-psd-pane-body"
+            @pointerenter="psdHintVisible = true"
+            @pointerleave="psdHintVisible = false"
+          >
             <!-- Loading skeleton -->
             <div
               v-if="psdLoading"
               class="flex h-full flex-col items-center justify-center gap-3 text-sm text-text-secondary"
             >
-              <div class="h-8 w-8 animate-spin rounded-full border-2 border-border border-t-accent" />
+              <div
+                class="h-8 w-8 animate-spin rounded-full border-2 border-border border-t-accent"
+              />
               <span>PSD解析中...</span>
             </div>
             <!-- Error placeholder -->
@@ -709,98 +985,30 @@ function onMark(status: 'done' | 'pending'): void {
               v-else-if="psdUrl"
               :src="psdUrl"
               :zoom-ratio="zoomRatio"
+            :pan="sharedPan"
+            @update:pan="sharedPan = $event"
+            @page-wheel="onPageWheel"
               @update:zoom-ratio="zoomRatio = $event"
             />
             <div v-else class="flex h-full items-center justify-center text-sm text-text-tertiary">
               无PSD图片
             </div>
+            <!--
+              嵌 / 监态的「下一页」：贴 **PSD 栏画面容器的右缘**（用户拍板）。
+              只在这一支出现 ⇒ 与原图栏里那枚**永不共存**（原图栏那枚在这一支被 `showNextPager=false` 关掉）。
+            -->
+            <ComparePager
+              kind="next"
+              position-class="right-2"
+              :visible="psdHintVisible"
+              test-id="compare-page-next-psd"
+              @go="onPsdPagerGo"
+            />
           </div>
         </div>
-      </div>
-
-      <!--
-        缩放控件组（看图软件的右下角那一组）。倍数只有一份，两栏同时跟着变；
-        平移各自独立 —— 对照时"同一比例、各看各的位置"才是常用姿势。
-        缩略图条展开时整组往上让位（不必等被压住才发现）。
-      -->
-      <div
-        class="absolute right-3 z-10 flex items-center gap-0.5 rounded-badge border border-border bg-card-bg px-1 py-0.5 shadow-[var(--shadow-1)]"
-        :style="{ bottom: thumbStripOpen ? `${STRIP_BAR_HEIGHT_PX + 12}px` : '12px' }"
-        data-testid="compare-zoom-controls"
-      >
-        <button
-          type="button"
-          class="flex h-6 w-6 items-center justify-center rounded-badge text-text-secondary transition-colors hover:bg-card-bg-hover hover:text-text-primary"
-          aria-label="缩小"
-          title="缩小"
-          data-testid="compare-zoom-out"
-          @click="onZoomOut"
-        >
-          <svg class="h-[18px] w-[18px]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round">
-            <circle cx="10.5" cy="10.5" r="6.5" />
-            <line x1="7.5" y1="10.5" x2="13.5" y2="10.5" />
-            <line x1="15.5" y1="15.5" x2="20.5" y2="20.5" />
-          </svg>
-        </button>
-
-        <input
-          v-if="zoomInputOpen"
-          ref="zoomInputRef"
-          v-model="zoomDraft"
-          class="h-6 w-[52px] rounded-badge border border-primary-border bg-app-bg px-1 text-center text-[12px] tabular-nums text-text-primary focus:outline-none"
-          data-testid="compare-zoom-input"
-          @keydown.enter="commitZoomInput"
-          @keydown.esc.stop="cancelZoomInput"
-          @blur="commitZoomInput"
-        />
-        <button
-          v-else
-          type="button"
-          class="h-6 min-w-[52px] rounded-badge px-1 text-[12px] tabular-nums text-text-primary transition-colors hover:bg-card-bg-hover"
-          title="显示当前缩放倍数（100% = 整页刚好塞进窗口）；点一下可以直接输入"
-          data-testid="compare-zoom-percent"
-          @click="openZoomInput"
-        >
-          {{ zoomPercent }}
-        </button>
-
-        <button
-          type="button"
-          class="flex h-6 w-6 items-center justify-center rounded-badge text-text-secondary transition-colors hover:bg-card-bg-hover hover:text-text-primary"
-          aria-label="放大"
-          title="放大"
-          data-testid="compare-zoom-in"
-          @click="onZoomIn"
-        >
-          <svg class="h-[18px] w-[18px]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round">
-            <circle cx="10.5" cy="10.5" r="6.5" />
-            <line x1="7.5" y1="10.5" x2="13.5" y2="10.5" />
-            <line x1="10.5" y1="7.5" x2="10.5" y2="13.5" />
-            <line x1="15.5" y1="15.5" x2="20.5" y2="20.5" />
-          </svg>
-        </button>
-
-        <span class="mx-0.5 h-4 w-px shrink-0 bg-border" aria-hidden="true" />
-
-        <button
-          type="button"
-          class="flex h-6 w-6 items-center justify-center rounded-badge text-text-secondary transition-colors hover:bg-card-bg-hover hover:text-text-primary"
-          aria-label="适应窗口"
-          title="回到默认大小（适应窗口 = 100%）"
-          data-testid="compare-zoom-fit"
-          @click="onZoomFit"
-        >
-          <!-- 与"看图软件"同款：外框 + 四个内折角 + 中心实心圆（2026-09-27 按用户给的参照图换的） -->
-          <svg class="h-[18px] w-[18px]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
-            <rect x="3" y="4.5" width="18" height="15" rx="2.5" />
-            <path d="M5.8 8.8V5.8h3" />
-            <path d="M15.2 5.8h3v3" />
-            <path d="M18.2 15.2v3h-3" />
-            <path d="M8.8 18.2h-3v-3" />
-            <circle cx="12" cy="12" r="2" fill="currentColor" stroke="none" />
-          </svg>
-        </button>
+        </div>
       </div>
     </div>
+
   </div>
 </template>

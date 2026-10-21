@@ -273,7 +273,7 @@ describe('LabelPlus manifest · 写盘前自检', () => {
  */
 describe('LabelPlus manifest · 与 runner 的跨语言契约', () => {
   const runnerPath = resolve(__dirname, '../../../resources/qianzi-runner.jsx')
-  const runnerSource = readFileSync(runnerPath, 'utf8')
+  const runnerSource = readFileSync(runnerPath, 'utf8').replace(/\r\n?/g, '\n')
   // 注释里提到这些语法是允许的，所以先把注释剥掉再查。
   const runnerCode = runnerSource
     .replace(/\/\*[\s\S]*?\*\//g, '')

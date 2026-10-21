@@ -68,7 +68,7 @@ function backupFixture(): Array<typeof BACKUP & { reason: string }> {
   })
 }
 
-function auditOperation(): MarkAuditOperation {
+function auditOperation(overrides: Partial<MarkAuditOperation> = {}): MarkAuditOperation {
   const entry = (index: number) => ({
     pathKey: `k${index}`,
     path: `E:\\漫画\\第10話\\${String(index).padStart(3, '0')}.psd`,
@@ -94,8 +94,26 @@ function auditOperation(): MarkAuditOperation {
       { childId: 'c2', folderPath: 'E:\\漫画\\第11話', entries: [entry(21)] }
     ],
     fileCount: 4,
-    skippedCount: 2
+    skippedCount: 2,
+    ...overrides
   }
+}
+
+/**
+ * ⚠️ 台账面板必须**四种 kind 都在场**（2026-10-07 补）。
+ *
+ * 起因：这里原来只喂了一条 `kind: 'mark'` 的操作，于是截图里只能看见「标记」那一枚徽章；
+ * 而 `kindTag()` 的另外三个分支（撤销 / 还原 / 迁移 / 取消）**从来没被截过图**——
+ * 结果「撤销」「还原」两枚徽章把"压实心色块的字"（`-fg`）压在淡彩底上
+ * （日 1.07:1 / 夜 1.12:1，字等于不存在），连续几轮走查都没人发现。
+ * 截图工装没覆盖到的分支 = 没有走查的分支。
+ */
+function auditOperations(): MarkAuditOperation[] {
+  return [
+    auditOperation(),
+    auditOperation({ opId: 'op-2', kind: 'undo', at: 1790517300000, mode: 'proofread' }),
+    auditOperation({ opId: 'op-3', kind: 'restore', at: 1790513700000, mode: 'typeset' })
+  ]
 }
 
 beforeEach(() => {
@@ -128,7 +146,7 @@ beforeEach(() => {
     dbBackupRestoreApply: vi.fn(() =>
       Promise.resolve({ revertedFiles: 4, childIds: ['c1'], operation: null })
     ),
-    memoryListMarkAudit: vi.fn(() => Promise.resolve([auditOperation()])),
+    memoryListMarkAudit: vi.fn(() => Promise.resolve(auditOperations())),
     diagnosticsSnapshot: vi.fn(() =>
       Promise.resolve({
         appVersion: '0.4.0',

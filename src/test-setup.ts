@@ -1,5 +1,16 @@
 // Vitest setup file — runs before every test file.
 // Polyfills APIs that jsdom (used by vitest) does not provide out-of-the-box.
+if (typeof HTMLElement !== 'undefined' && !HTMLElement.prototype.scrollIntoView) {
+  HTMLElement.prototype.scrollIntoView = () => {}
+}
+// Layout is exercised in Electron; jsdom only checks component contracts.
+if (typeof globalThis.ResizeObserver === 'undefined') {
+  globalThis.ResizeObserver = class {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  }
+}
 
 class LocalStorageMock implements Storage {
   private store: Record<string, string> = {}

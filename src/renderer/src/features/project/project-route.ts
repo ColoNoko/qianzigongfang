@@ -26,6 +26,7 @@ export function childWorkbenchPath(parentTitle: string, childId: string): string
 const DEFAULT_ROUTE_NAME = 'dashboard'
 
 export interface StartupRouteInput {
+  startupPage?: 'home' | 'project'
   /**
    * Route name the window resolved to before the app mounted. Callers must
    * await `router.isReady()` first — until the initial navigation settles this
@@ -41,6 +42,8 @@ export function resolveStartupPath(input: StartupRouteInput): string | null {
   // An explicit entry point wins: deep links (`#/project/...`) and the
   // standalone LabelPlus preview window must never be redirected.
   if (input.routeName !== DEFAULT_ROUTE_NAME) return null
+
+  if (input.startupPage !== 'project') return '/'
 
   const chapters = input.parents.flatMap((parent) =>
     parent.children.map((child) => ({ parentTitle: child.parentTitle, childId: child.id }))

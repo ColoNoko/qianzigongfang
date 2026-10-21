@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { Button as UiButton } from '@renderer/components/ui/button'
 // EmptyState — centered card for empty/missing-data views.
 // Replaces ad-hoc empty placeholders across Dashboard, Achievements, Project.
 import { computed } from 'vue'
@@ -40,13 +41,13 @@ const hasCta = computed(() => typeof props.ctaText === 'string' && props.ctaText
       {{ icon }}
     </div>
     <p class="text-lg text-text-secondary">{{ headline }}</p>
-    <button
+    <UiButton variant="default" size="sm"
       v-if="hasCta"
-      class="rounded-badge bg-accent px-6 py-3 text-text-on-accent transition-colors hover:bg-primary-hover active:bg-primary-active"
+      class="transition-colors"
       :data-testid="ctaTestId"
       @click="ctaAction?.()"
     >
       {{ ctaText }}
-    </button>
+    </UiButton>
   </div>
 </template>

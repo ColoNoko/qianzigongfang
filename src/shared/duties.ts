@@ -1,4 +1,5 @@
-import type { WorkMode } from './types'
+import { childModeProgress } from './status'
+import type { ParentProject, WorkMode } from './types'
 import { WORK_MODES } from './modes'
 
 /**
@@ -53,7 +54,8 @@ export function toggleDuty(current: readonly WorkMode[], mode: WorkMode): WorkMo
  */
 export function pickDutyMode(
   duties: readonly WorkMode[],
-  progress: Partial<Record<WorkMode, { done: number; total: number }>>
+  progress: Partial<Record<WorkMode, { done: number; total: number }>>,
+  priority: 'slower' | 'faster' = 'slower'
 ): WorkMode | null {
   const list = normalizeDuties(duties)
   if (list.length === 0) return null
@@ -66,7 +68,7 @@ export function pickDutyMode(
   }
   let best = list[0]
   for (const mode of list) {
-    if (ratio(mode) < ratio(best)) best = mode
+    if (priority === 'faster' ? ratio(mode) > ratio(best) : ratio(mode) < ratio(best)) best = mode
   }
   return best
 }
@@ -107,3 +109,12 @@ export function inferParentDuties(
 
 /** 只给渲染用的类型别名，避免调用方各写一份。 */
 export type ParentDutyMap = Record<string, WorkMode[] | undefined>
+
+/** Aggregate chapter completion before choosing a manga's entry mode. */
+export function pickParentDutyMode(parent: ParentProject, duties: readonly WorkMode[], priority: 'slower' | 'faster' = 'slower'): WorkMode | null {
+  const progress = Object.fromEntries(WORK_MODES.map(mode => [mode, parent.children.reduce((sum, child) => {
+    const value = childModeProgress(child, mode)
+    return { done: sum.done + value.done, total: sum.total + value.total }
+  }, { done: 0, total: 0 })]))
+  return pickDutyMode(duties, progress, priority)
+}

@@ -1,4 +1,10 @@
 <script setup lang="ts">
+import { Popover, PopoverTrigger, PopoverContent } from './components/ui/popover'
+import WorkModeSegments from './components/WorkModeSegments.vue'
+import NavigationIcon from './features/shell/NavigationIcon.vue'
+
+import ActionConfirmation from './components/ActionConfirmation.vue'
+import { Button as UiButton } from '@renderer/components/ui/button'
 // WeChat-PC style shell: narrow left icon rail + content panel.
 // Nav order mirrors the oldcode QTabWidget tabs (漫画管理/设置) plus the
 // plan's Project + Achievements entries.
@@ -6,10 +12,11 @@ import { computed, onBeforeUnmount, onErrorCaptured, onMounted, ref, watch } fro
 import { useRoute, useRouter } from 'vue-router'
 import ErrorToast from '@renderer/components/ErrorToast.vue'
 import GuideDialog from '@renderer/features/guide/GuideDialog.vue'
-import { GUIDE_TOOL_FIELDS, GUIDE_VERSION } from '@renderer/features/guide/guide-pages'
+import { GUIDE_VERSION } from '@renderer/features/guide/guide-config'
 import { useThemeStore } from '@renderer/stores/theme'
 import { useProjectWorkspace } from '@renderer/stores/projectWorkspace'
 import { useSettingsStore } from '@renderer/stores/settings'
+import { PROJECT_INCREMENTAL_INTERVAL, runProjectIncrementalScan } from '@renderer/services/project-incremental'
 import { resolveProjectNavPath } from '@renderer/features/project/project-route'
 
 const route = useRoute()
@@ -19,22 +26,32 @@ const themeStore = useThemeStore()
 const workspace = useProjectWorkspace()
 // 新手引导：看没看过存在 settings（`ui.guideSeenVersion`，见交接文档 §13.9）。
 const settings = useSettingsStore()
+const selectedWorkMode = computed(() => settings.activeWorkMode)
+function selectWorkMode(mode: import('@shared/types').WorkMode): void {
+  void settings.setActiveWorkMode(mode)
+}
+let incrementalTimer: ReturnType<typeof setInterval> | undefined
+let incrementalGeneration = 0
+watch(() => settings.autoIncrementalScan, enabled => {
+  clearInterval(incrementalTimer)
+  const generation = ++incrementalGeneration
+  if (!enabled) return
+  incrementalTimer = setInterval(() => {
+    if (route.meta.standalone) return
+    void runProjectIncrementalScan(() => generation === incrementalGeneration && settings.autoIncrementalScan)
+      .catch(error => console.error('后台项目扫描失败', error))
+  }, PROJECT_INCREMENTAL_INTERVAL)
+}, { immediate: true })
 const guideOpen = ref(false)
-/**
- * 这次打开**要不要先停在入口页挑栏**（用户 2026-10-03 定的向导规矩）：
- * - **首次**（启动自动弹的那次）→ `false`：不给选择，直接进 `01` 强制看基础；
- * - **重看**（左下角「指引」）→ `true`：先给入口页，让你挑"基础 01–05 / 进阶 06–09"。
- */
+// 首次自动打开快速上手；主动打开时进入功能查阅。
 const guideStartWithEntry = ref(false)
-/** 引导第 4 页"就地填"那三个字段要显示的当前值（引导组件不读存储，由这里喂）。 */
-const guideToolPaths = computed(() => ({
-  labelPlusFx: settings.labelPlusFxPath,
-  photoshop: settings.photoshopPath,
-  importScript: settings.typesetImportScript
-}))
 const pageError = ref('')
 const isNightMode = computed(() => themeStore.resolvedTheme === 'dark')
 const isStandalone = computed(() => route.meta.standalone === true)
+const nativeTitleOverlay = navigator.userAgent.includes('Windows')
+watch(isNightMode, dark => {
+  if (!isStandalone.value) void window.comicType.setWindowTitleBarTheme?.(dark ? 'dark' : 'light').catch(() => undefined)
+}, {immediate:true})
 
 /**
  * 首次启动自动弹一次引导，左下角「指引」按钮随时再弹（同一个弹窗）。
@@ -58,7 +75,7 @@ watch(
 )
 
 function openGuide(): void {
-  // 重看：先给入口页挑栏（首次那次是自动弹的，不走这里）。
+  // 主动查阅：默认显示功能查阅。
   guideStartWithEntry.value = true
   guideOpen.value = true
 }
@@ -67,20 +84,6 @@ function openGuide(): void {
 function closeGuide(): void {
   guideOpen.value = false
   settings.markGuideSeen(GUIDE_VERSION)
-}
-
-/**
- * 引导里"浏览…"挑外部工具（第 4 页就地填）—— **落库在宿主这一层做**，
- * 引导组件只 emit（它不认识存储，见 `GuideDialog.vue` 顶部那段）。
- */
-async function onGuidePickTool(field: 'labelPlusFx' | 'photoshop' | 'importScript'): Promise<void> {
-  const meta = GUIDE_TOOL_FIELDS.find((item) => item.id === field)
-  if (!meta) return
-  const picked = await window.comicType.pickToolFile(meta.pickKind)
-  if (!picked) return
-  if (field === 'labelPlusFx') settings.setLabelPlusFxPath(picked)
-  else if (field === 'photoshop') settings.setPhotoshopPath(picked)
-  else settings.setTypesetImportScript(picked)
 }
 
 interface NavItem {
@@ -261,6 +264,8 @@ onMounted(() => {
 })
 
 onBeforeUnmount(() => {
+  incrementalGeneration++
+  clearInterval(incrementalTimer)
   window.removeEventListener('resize', onWindowResize)
   document.removeEventListener('scroll', onDocumentScroll)
   if (layoutLogTimer !== null) clearTimeout(layoutLogTimer)
@@ -284,30 +289,35 @@ watch(
     </section>
     <RouterView v-else />
   </div>
-  <div v-else class="flex h-full bg-app-bg text-text-primary" data-testid="app-shell">
+  <div v-else class="flex h-full flex-col bg-app-bg text-text-primary" data-testid="app-shell" :data-native-overlay="nativeTitleOverlay">
+    <div v-if="nativeTitleOverlay" class="window-titlebar" data-testid="window-titlebar" aria-hidden="true"></div>
+    <div class="app-body flex min-h-0 flex-1">
     <!-- Global toast renderer (fixed top-right, always mounted) -->
     <ErrorToast />
+    <ActionConfirmation />
 
     <!-- Left icon rail — WeChat-PC style, fixed 56px.
          激活态不再是一整块高亮：56×64 的色块一屏有 6 个候选位置，太吵；
          现在只留"主色图标 + 左侧 3px 竖条"，视线焦点回到内容区。
          （App-navigation.spec 锁的是激活项必须含 text-accent，这条保留。） -->
     <nav
-      class="flex w-14 flex-col items-center border-r border-border bg-card-bg"
+      class="app-nav flex w-14 shrink-0 flex-col items-center overflow-y-auto border-r border-border bg-card-bg"
+      :data-night="isNightMode"
       aria-label="主导航"
       data-testid="app-nav"
     >
-      <button
+      <UiButton variant="ghost" size="sm"
         v-for="item in navItems"
         :key="item.name"
         type="button"
-        class="group relative flex h-16 w-full flex-col items-center justify-center gap-1.5 transition-colors"
+        class="group relative h-16 w-full shrink-0 flex-col gap-1.5 rounded-none px-0 [&_svg]:size-6"
         :class="
           isActive(item.name)
             ? 'text-accent'
             : 'text-text-secondary hover:bg-card-bg-hover hover:text-text-primary'
         "
         :title="item.label"
+        :aria-current="isActive(item.name) ? 'page' : undefined"
         :data-testid="`nav-${item.name}`"
         @click="navigate(item.to)"
       >
@@ -316,185 +326,46 @@ watch(
           class="absolute left-0 top-1/2 h-6 w-[3px] -translate-y-1/2 rounded-r-full bg-accent"
           aria-hidden="true"
         />
-        <!-- Dashboard: grid icon -->
-        <svg
-          v-if="item.name === 'dashboard'"
-          class="h-6 w-6"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          stroke-width="2"
-          stroke-linecap="round"
-          stroke-linejoin="round"
-        >
-          <rect x="3" y="3" width="7" height="7" rx="1" />
-          <rect x="14" y="3" width="7" height="7" rx="1" />
-          <rect x="3" y="14" width="7" height="7" rx="1" />
-          <rect x="14" y="14" width="7" height="7" rx="1" />
-        </svg>
-        <!-- Project: folder icon -->
-        <svg
-          v-else-if="item.name === 'project'"
-          class="h-6 w-6"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          stroke-width="2"
-          stroke-linecap="round"
-          stroke-linejoin="round"
-        >
-          <path
-            d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.93a2 2 0 0 1-1.66-.9l-.82-1.2A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13c0 1.1.9 2 2 2z"
-          />
-        </svg>
-        <!-- Progress: hourglass icon（欠账清单：还欠几话、多久没动） -->
-        <svg
-          v-else-if="item.name === 'progress'"
-          class="h-6 w-6"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          stroke-width="2"
-          stroke-linecap="round"
-          stroke-linejoin="round"
-        >
-          <path d="M6 2h12" />
-          <path d="M6 22h12" />
-          <path d="M8 2v4l4 5 4-5V2" />
-          <path d="M8 22v-4l4-5 4 5v4" />
-        </svg>
-        <!-- Achievements: trophy icon -->
-        <svg
-          v-else-if="item.name === 'achievements'"
-          class="h-6 w-6"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          stroke-width="2"
-          stroke-linecap="round"
-          stroke-linejoin="round"
-        >
-          <path d="M8 21h8" />
-          <path d="M12 17v4" />
-          <path d="M7 4h10v5a5 5 0 0 1-10 0V4z" />
-          <path d="M17 5h3v2a3 3 0 0 1-3 3" />
-          <path d="M7 5H4v2a3 3 0 0 0 3 3" />
-        </svg>
-        <!-- Fonts: typography icon -->
-        <svg
-          v-else-if="item.name === 'fonts'"
-          class="h-6 w-6"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          stroke-width="2"
-          stroke-linecap="round"
-          stroke-linejoin="round"
-        >
-          <path d="M4 19 10 5h2l6 14" />
-          <path d="M6.5 14h9" />
-          <path d="M17 9h3" />
-          <path d="M18.5 9v10" />
-        </svg>
-        <!-- Import: download icon -->
-        <svg
-          v-else-if="item.name === 'import'"
-          class="h-6 w-6"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          stroke-width="2"
-          stroke-linecap="round"
-          stroke-linejoin="round"
-        >
-          <path d="M12 3v12" />
-          <path d="m7 10 5 5 5-5" />
-          <path d="M5 20h14" />
-        </svg>
-        <!-- Settings: gear icon -->
-        <svg
-          v-else-if="item.name === 'settings'"
-          class="h-6 w-6"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          stroke-width="2"
-          stroke-linecap="round"
-          stroke-linejoin="round"
-        >
-          <circle cx="12" cy="12" r="3" />
-          <path
-            d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"
-          />
-        </svg>
+        <NavigationIcon :name="item.name" />
         <span class="text-[11px] leading-none">{{ item.label }}</span>
-      </button>
+      </UiButton>
 
+      <div class="mt-auto" />
+      <Popover v-if="settings.enabledWorkModes.length > 1">
+        <PopoverTrigger as-child>
+          <UiButton variant="ghost" size="sm" class="h-16 w-full shrink-0 flex-col gap-1.5 rounded-none px-0 [&_svg]:size-6" data-testid="work-mode-open" aria-label="切换工作模式">
+            <NavigationIcon name="mode" />
+            <span class="text-[11px] leading-none">模式</span>
+          </UiButton>
+        </PopoverTrigger>
+        <PopoverContent side="right" align="end" class="w-auto p-2" data-testid="work-mode-menu">
+          <WorkModeSegments :model-value="selectedWorkMode" reselect :modes="settings.enabledWorkModes" :disabled="settings.savingWorkModes" @update:model-value="selectWorkMode" />
+        </PopoverContent>
+      </Popover>
       <!-- 指引：随时重看新手引导。样式与下面那个昼夜按钮同一套（同样的 h-16、
            24px 图标、11px 小字、悬停底色），只是不占 mt-auto —— 那个留给昼夜按钮，
            它负责顶到最底下。 -->
-      <button
+      <UiButton variant="ghost" size="sm"
         type="button"
-        class="flex h-16 w-full flex-col items-center justify-center gap-1.5 text-text-secondary transition-colors hover:bg-card-bg-hover hover:text-text-primary"
+        class="h-16 w-full shrink-0 flex-col gap-1.5 rounded-none px-0 [&_svg]:size-6"
         title="指引（重新查看新手引导）"
         data-testid="guide-open"
         @click="openGuide"
       >
-        <!-- Help circle：侧栏其余图标都是"物件/动作"，问号圈最不容易和设置（齿轮）、
-             字体（A）混。 -->
-        <svg
-          class="h-6 w-6"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          stroke-width="2"
-          stroke-linecap="round"
-          stroke-linejoin="round"
-          aria-hidden="true"
-        >
-          <circle cx="12" cy="12" r="9" />
-          <path d="M9.4 9.3a2.7 2.7 0 0 1 5.4.8c0 1.8-2.8 2.1-2.8 3.6" />
-          <path d="M12 17.1h.01" />
-        </svg>
+        <NavigationIcon name="guide" />
         <span class="text-[11px] leading-none">指引</span>
-      </button>
+      </UiButton>
 
-      <button
+      <UiButton variant="ghost" size="sm"
         type="button"
-        class="mt-auto flex h-16 w-full flex-col items-center justify-center gap-1.5 text-text-secondary transition-colors hover:bg-card-bg-hover hover:text-text-primary"
+        class="h-16 w-full shrink-0 flex-col gap-1.5 rounded-none px-0 [&_svg]:size-6"
         :title="isNightMode ? '切换到日间模式' : '切换到夜间模式'"
         data-testid="night-mode-toggle"
         @click="toggleNightMode"
       >
-        <svg
-          v-if="isNightMode"
-          class="h-6 w-6"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          stroke-width="2"
-          stroke-linecap="round"
-          stroke-linejoin="round"
-        >
-          <circle cx="12" cy="12" r="4" />
-          <path
-            d="M12 2v2M12 20v2M4.93 4.93l1.42 1.42M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.42-1.42M17.66 6.34l1.41-1.41"
-          />
-        </svg>
-        <svg
-          v-else
-          class="h-6 w-6"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          stroke-width="2"
-          stroke-linecap="round"
-          stroke-linejoin="round"
-        >
-          <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
-        </svg>
+        <NavigationIcon :name="isNightMode ? 'sun' : 'moon'" />
         <span class="text-[11px] leading-none">{{ isNightMode ? '日间' : '夜间' }}</span>
-      </button>
+      </UiButton>
     </nav>
 
     <!-- Right content area -->
@@ -503,7 +374,8 @@ watch(
          relative 也不是装饰：内容区必须自己当**定位基准**，设置页里那些 `sr-only`
          （= position: absolute）的控件才不会被甩到"初始包含块"上、进而不受这层 overflow 裁剪、
          把**文档**顶高出一根多余的滚动条 —— 见 §0 第二十二轮。 -->
-    <main class="relative flex-1 min-h-0 overflow-auto" data-testid="app-main">
+    <main class="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden" data-testid="app-main" :data-project-workspace="route.name === 'project'">
+      <div class="app-scroll min-h-0 flex-1 overflow-auto">
       <section
         v-if="pageError"
         class="flex h-full min-h-80 items-center justify-center p-8"
@@ -517,13 +389,13 @@ watch(
           <p class="mt-3 break-all rounded bg-app-bg p-3 text-left text-xs text-text-secondary">
             {{ pageError }}
           </p>
-          <button
+          <UiButton variant="default" size="sm"
             type="button"
-            class="mt-4 rounded-badge bg-accent px-4 py-2 text-sm text-text-on-accent transition-colors hover:bg-primary-hover active:bg-primary-active"
+            class="mt-4 transition-colors"
             @click="reloadApp"
           >
             重新加载
-          </button>
+          </UiButton>
         </div>
       </section>
       <RouterView v-slot="{ Component }" v-else>
@@ -531,15 +403,32 @@ watch(
           <component :is="Component" />
         </KeepAlive>
       </RouterView>
+      </div>
     </main>
+    </div>
 
     <!-- 新手引导：首启自动弹一次，之后由左下角「指引」再打开（同一个弹窗）。 -->
     <GuideDialog
       :open="guideOpen"
       :start-with-entry="guideStartWithEntry"
-      :tool-paths="guideToolPaths"
       @close="closeGuide"
-      @pick-tool="onGuidePickTool"
     />
   </div>
 </template>
+
+<style scoped>
+.window-titlebar { position:fixed; inset:0 0 auto; height:env(titlebar-area-height,36px); -webkit-app-region:drag; pointer-events:none; }
+[data-native-overlay="true"] :deep(:is(button, a, input, select, textarea, [role="button"], [role="radio"], [role="slider"], [role="separator"], [role="dialog"])) { -webkit-app-region:no-drag; }
+[data-native-overlay="true"] { --window-controls-inset: env(titlebar-area-height,36px); }
+[data-native-overlay="true"] .app-nav { padding-top:var(--window-controls-inset); }
+[data-native-overlay="true"] .app-scroll { margin-top:var(--window-controls-inset); }
+[data-native-overlay="true"] [data-project-workspace="true"] > .app-scroll { margin-top:0; overflow:hidden; }
+[data-native-overlay="true"] :deep(.project-sidebar-scroll) { margin-top:var(--window-controls-inset); }
+[data-native-overlay="true"] :deep([data-viewer-workspace] > header) { padding-top:calc(var(--window-controls-inset) + 8px); min-height:calc(96px + var(--window-controls-inset)); }
+.app-nav { --nav-ink: var(--text-secondary); }
+.app-nav[data-night="true"] { --nav-ink: color-mix(in srgb, var(--text-secondary) 80%, var(--text-primary)); --nav-icon-wash: .14; }
+.app-nav > button { color: var(--nav-ink); }
+.app-nav > button:hover, .app-nav > button[data-state="open"] { color: var(--text-primary); background: var(--hover-surface); }
+.app-nav > button[aria-current="page"] { color: var(--primary); }
+.app-nav > button:focus-visible { box-shadow: inset 0 0 0 2px var(--ring); }
+</style>

@@ -22,7 +22,8 @@ export default defineConfig({
   },
   plugins: [vue()],
   test: {
-    environment: 'jsdom',
+    // Browser tests opt in with @vitest-environment jsdom; pure rules need no DOM.
+    environment: 'node',
     globals: true,
     include: ['src/**/*.spec.ts', 'src/**/*.test.ts'],
     // 视觉检查（会启动无头浏览器、产出图片）由 vitest.visual.config.ts 单独承载，

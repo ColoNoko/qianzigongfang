@@ -2,6 +2,7 @@ import { readFileSync } from 'fs'
 import { resolve } from 'path'
 import { defineConfig } from 'electron-vite'
 import vue from '@vitejs/plugin-vue'
+import { guideAssetsPlugin } from './build/guide-assets'
 
 /**
  * 版本号的**唯一真源** = `package.json`（2026-10-04 唯一化）。
@@ -41,6 +42,6 @@ export default defineConfig({
         '@shared': resolve('src/shared')
       }
     },
-    plugins: [vue()]
+    plugins: [vue(), guideAssetsPlugin()]
   }
 })

@@ -1,3 +1,4 @@
+import type { TranslationCredits } from './translation-credits'
 export const LABELPLUS_IMPORT_API_VERSION = 1 as const
 export const LABELPLUS_IMPORT_SETTINGS_KEY = 'labelplus.import.settings'
 
@@ -134,6 +135,7 @@ export interface LabelPlusImageEntry {
 }
 
 export interface LabelPlusDocument {
+  credits?: TranslationCredits
   sourcePath: string
   version: {
     first: number
@@ -322,7 +324,7 @@ export function createDefaultTextStyle(font = createDefaultStandardFont()): Stan
     font: { ...font },
     fontSizePx: 24,
     direction: 'horizontal',
-    leadingPercent: 100,
+    leadingPercent: 120,
     alignment: 'left',
     fillColor: '#000000',
     strokeColor: '#000000',

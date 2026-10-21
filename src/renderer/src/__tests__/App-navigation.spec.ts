@@ -8,7 +8,8 @@ import { defineComponent } from 'vue'
 import App from '../App.vue'
 import { useProjectWorkspace } from '@renderer/stores/projectWorkspace'
 import { useSettingsStore } from '@renderer/stores/settings'
-import { GUIDE_NAV_ITEMS, GUIDE_BASIC_PAGES, GUIDE_VERSION } from '@renderer/features/guide/guide-pages'
+import { GUIDE_VERSION } from '@renderer/features/guide/guide-config'
+import GuideDialog from '@renderer/features/guide/GuideDialog.vue'
 import type { ChildProject } from '@shared/types'
 
 function chapter(id: string, parentTitle: string): ChildProject {
@@ -118,6 +119,7 @@ describe('App navigation', () => {
       'nav-fonts',
       'nav-import',
       'nav-settings',
+      'work-mode-open',
       'guide-open',
       'night-mode-toggle'
     ])
@@ -127,37 +129,6 @@ describe('App navigation', () => {
 
     expect(router.currentRoute.value.name).toBe('fonts')
     expect(wrapper.text()).toContain('字体内容')
-  })
-
-  it('引导里的导航清单（GUIDE_NAV_ITEMS）与真实导航一致 —— 少了新页这里会红', () => {
-    // GUIDE_NAV_ITEMS 是引导第 1 页画那张"导航示意图"、以及"七个方块"文案的**数据源**，
-    // 它必须和 App.vue 真正渲染的 7 个功能页对上（顺序也一样）。
-    // ⚠️ 新增功能页：改 App.vue 的 navItems + 上面那条 nav 顺序预期时，**忘了同步
-    //    GUIDE_NAV_ITEMS** 就会在这里红 —— 这正是"说明书不许和程序说的不一样"那条锁。
-    expect([...GUIDE_NAV_ITEMS]).toEqual(['首页', '项目', '进度', '成就', '字体', '导入', '设置'])
-  })
-
-  /**
-   * 2026-10-04 用户看图后的第 2 条：第 01 页**标题下方那段导语**没跟上
-   * （v4 才把这一页改成一屏一条左右翻，导语却只字未提；「七个方块」也没说清
-   * 左下角那两枚按钮不在其中）。数字从 `GUIDE_NAV_ITEMS` 推出来，不手抄。
-   */
-  it('第 01 页导语与真实侧栏一致：八个条目口径统一 + 怎么翻（2026-10-04 收口）', () => {
-    const CN = ['零', '一', '二', '三', '四', '五', '六', '七', '八', '九', '十']
-    const nav = GUIDE_BASIC_PAGES.find((page) => page.id === 'nav')!
-    const lead = nav.blocks.find((block) => block.kind === 'lead')!
-    const text = lead.text
-
-    // 七个功能页 + 「指引」那条 = 翻页内容恰好 8 条（含 lead：1 + 8）
-    const points = nav.blocks.filter((block) => block.kind === 'point')
-    expect(points).toHaveLength(GUIDE_NAV_ITEMS.length + 1) // 7 + 指引 = 8
-    // 导语说的总数必须与翻页条数一致（此前导语说"七个"而下面翻 8 条 —— 口径裂缝）
-    expect(text).toContain(`${CN[points.length]}条`)
-    expect(text).toContain(`${CN[GUIDE_NAV_ITEMS.length]}个功能页`)
-    // 「指引」在这 8 条里（口径统一的关键：不再说"不属于这七个"然后把又它当一条讲）
-    expect(text).toContain('指引')
-    // v4 的翻看交互（那一页是"一屏一条"）——不写，读者不会发现那两个箭头
-    expect(text).toContain('箭头')
   })
 
   it('每个导航项都带一枚图标（新增页面时不许只留文字）', async () => {
@@ -217,7 +188,12 @@ describe('App navigation', () => {
     const workspace = useProjectWorkspace()
     // 注册表里确实有这一话 —— 落点判定会校验它还在（见 resolveProjectNavPath）。
     workspace.parents = [
-      { id: 'p1', title: 'ドラゴンボール', lastMtimeMs: 0, children: [chapter('c1', 'ドラゴンボール')] }
+      {
+        id: 'p1',
+        title: 'ドラゴンボール',
+        lastMtimeMs: 0,
+        children: [chapter('c1', 'ドラゴンボール')]
+      }
     ]
     workspace.setActiveChild(chapter('c1', 'ドラゴンボール'), [])
 
@@ -275,66 +251,34 @@ describe('App navigation', () => {
       return wrapper
     }
 
-    it('首次打开（设置读完、没看过）自动弹出引导 —— **不给选择，直接进 01**', async () => {
+    it('首次打开快速上手', async () => {
       const wrapper = await mountApp(0)
-
-      expect(wrapper.find('[data-testid="guide-overlay"]').exists()).toBe(true)
-      // 首次**不显示入口页**（不给选择），直接落在第 01 页、强制先看基础
-      expect(wrapper.find('[data-testid="guide-entry"]').exists()).toBe(false)
-      expect(wrapper.get('[data-testid="guide-step"]').text()).toBe('1 / 9')
-      expect(wrapper.get('[data-testid="guide-title"]').text()).toContain('01 ')
+      const guide = wrapper.getComponent(GuideDialog)
+      expect(guide.props('open')).toBe(true)
+      expect(guide.props('startWithEntry')).toBe(false)
     })
-
-    it('设置还没读完时不弹（否则每次启动都要闪一下）', async () => {
-      const wrapper = await mountApp(0, false)
-
-      expect(wrapper.find('[data-testid="guide-overlay"]').exists()).toBe(false)
+    it('设置未读完或已经看过时不自动弹出', async () => {
+      for (const [version, loaded] of [[0, false], [GUIDE_VERSION, true]] as const) {
+        const wrapper = await mountApp(version, loaded)
+        expect(wrapper.getComponent(GuideDialog).props('open')).toBe(false)
+        wrapper.unmount()
+      }
     })
-
-    it('已经看过就不再自动弹', async () => {
+    it('手动打开功能查阅，关闭已读指引不重复写库', async () => {
       const wrapper = await mountApp(GUIDE_VERSION)
-
-      expect(wrapper.find('[data-testid="guide-overlay"]').exists()).toBe(false)
-    })
-
-    it('左下角「指引」随时能再打开（已看过的用户再看一遍，不会重复写库）', async () => {
-      const wrapper = await mountApp(GUIDE_VERSION)
-      expect(wrapper.find('[data-testid="guide-overlay"]').exists()).toBe(false)
-
       await wrapper.get('[data-testid="guide-open"]').trigger('click')
-      expect(wrapper.find('[data-testid="guide-overlay"]').exists()).toBe(true)
-      // 从「指引」进来的每一次都从**入口页**开始（分层之后：不能停在上次那一栏）
-      expect(wrapper.find('[data-testid="guide-entry"]').exists()).toBe(true)
-
-      // 进基础栏：从第 01 页开始（全局编号）
-      await wrapper.get('[data-testid="guide-lane-basics"]').trigger('click')
-      expect(wrapper.get('[data-testid="guide-step"]').text()).toBe('1 / 9')
-
-      // 基础 5 页走完（4 次下一步）→ 主按钮变「继续看进阶」
-      for (let step = 0; step < 4; step += 1) {
-        await wrapper.get('[data-testid="guide-next"]').trigger('click')
-      }
-      expect(wrapper.get('[data-testid="guide-next"]').text()).toBe('继续看进阶')
-      await wrapper.get('[data-testid="guide-next"]').trigger('click')
-      expect(wrapper.get('[data-testid="guide-step"]').text()).toBe('6 / 9')
-
-      // 进阶 4 页走完（3 次下一步 + 1 次完成）→ 才关窗
-      for (let step = 0; step < 3; step += 1) {
-        await wrapper.get('[data-testid="guide-next"]').trigger('click')
-      }
-      expect(wrapper.get('[data-testid="guide-next"]').text()).toBe('完成')
-      await wrapper.get('[data-testid="guide-next"]').trigger('click')
-      expect(wrapper.find('[data-testid="guide-overlay"]').exists()).toBe(false)
-      // 版本号没变 → 不重复写库（`markGuideSeen` 的幂等）
+      const guide = wrapper.getComponent(GuideDialog)
+      expect(guide.props('open')).toBe(true)
+      expect(guide.props('startWithEntry')).toBe(true)
+      guide.vm.$emit('close')
+      await flushPromises()
+      expect(guide.props('open')).toBe(false)
       expect(storeSet).not.toHaveBeenCalled()
     })
-
-    it('「跳过」也算看过（否则每次启动都来烦人）', async () => {
+    it('关闭首次指引会保存已读版本', async () => {
       const wrapper = await mountApp(0)
-
-      await wrapper.get('[data-testid="guide-skip"]').trigger('click')
-
-      expect(wrapper.find('[data-testid="guide-overlay"]').exists()).toBe(false)
+      wrapper.getComponent(GuideDialog).vm.$emit('close')
+      await flushPromises()
       expect(storeSet).toHaveBeenCalledWith('ui.guideSeenVersion', GUIDE_VERSION)
     })
   })

@@ -211,6 +211,18 @@ function readSystemPreference(): ResolvedTheme | null {
   }
 }
 
+/** Choose readable solid-button text while preserving the user's hue and saturation. */
+export function solidForeground(hue: number, saturation: number, lightness: number): string {
+  const l = lightness / 100, a = saturation / 100 * Math.min(l, 1 - l)
+  const channel = (n: number) => {
+    const k = (n + hue / 30) % 12
+    const c = l - a * Math.max(-1, Math.min(k - 3, 9 - k, 1))
+    return c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4
+  }
+  const luminance = 0.2126 * channel(0) + 0.7152 * channel(8) + 0.0722 * channel(4)
+  return luminance > 0.179 ? 'hsl(0 0% 0%)' : 'hsl(0 0% 100%)'
+}
+
 function hsl(hue: number, saturation: number, lightness: number, alpha?: number): string {
   return alpha === undefined
     ? `hsl(${hue} ${saturation}% ${lightness}%)`
@@ -237,7 +249,7 @@ export function applyThemeVariables(
   set('--primary', hsl(colors.hue, colors.saturation, baseLightness))
   set('--primary-hover', hsl(colors.hue, colors.saturation, baseLightness + (dark ? 6 : -6)))
   set('--primary-active', hsl(colors.hue, colors.saturation, baseLightness + (dark ? 12 : -12)))
-  set('--primary-fg', hsl(colors.hue, colors.saturation, dark ? 12 : 98))
+  set('--primary-fg', solidForeground(colors.hue, colors.saturation, baseLightness))
   set('--primary-soft', dark ? hsl(colors.hue, 45, 26) : hsl(colors.hue, 55, 93))
   set('--primary-soft-hover', dark ? hsl(colors.hue, 45, 30) : hsl(colors.hue, 55, 89))
   // Persistent selection tint: one step deeper than hover in BOTH themes.
@@ -280,7 +292,7 @@ export function applyThemeVariables(
 
   for (const [name, semanticHue, semanticSaturation] of SEMANTIC_COLORS) {
     set(`--${name}`, hsl(semanticHue, semanticSaturation, dark ? 62 : 48))
-    set(`--${name}-fg`, hsl(semanticHue, semanticSaturation, dark ? 12 : 98))
+    set(`--${name}-fg`, solidForeground(semanticHue, semanticSaturation, dark ? 62 : 48))
     set(`--${name}-soft`, dark ? hsl(semanticHue, 35, 17) : hsl(semanticHue, 65, 94))
   }
 

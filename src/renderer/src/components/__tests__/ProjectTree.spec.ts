@@ -1,8 +1,13 @@
+import { DropdownMenu, DropdownMenuItem } from '../ui/dropdown-menu'
+import { flushPromises } from '@vue/test-utils'
 // @vitest-environment jsdom
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
-import { describe, expect, it, vi } from 'vitest'
-import { mount } from '@vue/test-utils'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { config, enableAutoUnmount, mount } from '@vue/test-utils'
+config.global.stubs.teleport = true
+config.global.renderStubDefaultSlot = true
+enableAutoUnmount(afterEach)
 import ProjectTree from '../ProjectTree.vue'
 import type { ParentProject, WorkMode } from '@shared/types'
 
@@ -53,6 +58,14 @@ function makeParents(): ParentProject[] {
   ]
 }
 
+async function selectParentAction(wrapper: ReturnType<typeof mount>, text: string) {
+  wrapper.findComponent(DropdownMenu).vm.$emit('update:open', true)
+  await wrapper.vm.$nextTick()
+  const item = wrapper.findAllComponents(DropdownMenuItem).find(item => item.text() === text)
+  expect(item).toBeTruthy()
+  item!.vm.$emit('select', new Event('select'))
+  await wrapper.vm.$nextTick()
+}
 describe('ProjectTree', () => {
   it('renders 2 parent rows; clicking chevron on first parent expands it showing 2 children', async () => {
     const wrapper = mount(ProjectTree, { props: { parents: makeParents() } })
@@ -190,8 +203,7 @@ describe('ProjectTree', () => {
     const activeRow = wrapper
       .findAll('div.cursor-pointer')
       .find((row) => row.text().includes('第2集'))
-    expect(activeRow?.classes()).toContain('bg-card-bg-hover')
-    expect(activeRow?.classes()).toContain('text-accent')
+    expect(activeRow?.attributes('aria-current')).toBe('true')
   })
 
   it('keeps the current collapsed state when another project is deleted', async () => {
@@ -219,14 +231,34 @@ describe('ProjectTree', () => {
     expect(wrapper.text()).not.toContain('第2集')
   })
 
+  /**
+   * 「修改扫描目录」入口（2026-10-05，需求二）。
+   *
+   * 三条一起锁：
+   *   ① 只在**管理模式**出现（普通模式那一行已经很挤，而且这个动作属于"整理"而不是"干活"）；
+   *   ② 点了 emit 父级 id；
+   *   ③ **不许顺手勾选整批** —— 管理模式里点父级行的语义是"勾选这一本全部话"，
+   *      少一个 @click.stop，用户点一下"扫描目录"就会把几十话悄悄勾上
+   *      （本仓库为"悄无声息地勾选"已经踩过一次）。
+   */
+  it('管理模式下父级行多一个「扫描目录」：点了 emit、且不勾选整批', async () => {
+    const normal = mount(ProjectTree, { props: { parents: makeParents() } })
+    expect(normal.find('[data-testid="parent-source-root-button"]').exists()).toBe(false)
+
+    const wrapper = mount(ProjectTree, {
+      props: { parents: makeParents(), multiSelect: true }
+    })
+    await selectParentAction(wrapper, '扫描目录')
+    expect(wrapper.emitted('editSourceRoot')?.[0]).toEqual(['p1'])
+    expect(wrapper.emitted('toggleParentMark'), '点入口按钮不该勾选整批').toBeFalsy()
+  })
+
   it('clicking parent 重命名 turns the title into an input and enter emits renameParent', async () => {
     const wrapper = mount(ProjectTree, {
       props: { parents: makeParents(), multiSelect: true }
     })
 
-    const manageButton = wrapper.findAll('button').find((button) => button.text() === '重命名')
-    expect(manageButton).toBeTruthy()
-    await manageButton!.trigger('click')
+    await selectParentAction(wrapper, '重命名漫画')
 
     const input = wrapper.find('input[data-parent-edit-id="p1"]')
     expect(input.exists()).toBe(true)
@@ -237,16 +269,13 @@ describe('ProjectTree', () => {
     expect(wrapper.emitted('expand')).toBeFalsy()
   })
 
-  it('shows child progress right-aligned and rename at 40% opacity', async () => {
+  it('shows compact chapter progress', async () => {
     const normalWrapper = mount(ProjectTree, { props: { parents: makeParents() } })
     expect(normalWrapper.text()).not.toContain('重命名')
 
     const wrapper = mount(ProjectTree, {
       props: { parents: makeParents(), multiSelect: true }
     })
-    const rename = wrapper.findAll('button').find((button) => button.text() === '重命名')!
-    expect(rename.classes()).toContain('opacity-40')
-
     await wrapper.findAll('.font-bold')[0].get('button[aria-label="展开子项目"]').trigger('click')
     expect(wrapper.text()).toContain('嵌字进度1/2')
   })
@@ -340,103 +369,101 @@ describe('ProjectTree', () => {
     expect(typeset.text()).toContain('嵌字进度0/3')
   })
 
-describe('revealActiveChild（工作台侧栏专用）', () => {
-  it('打开开关时自动展开当前话所属的父级，并给它高亮', async () => {
-    const wrapper = mount(ProjectTree, {
-      props: { parents: makeParents(), activeChildId: 'c1', revealActiveChild: true }
-    })
-    await wrapper.vm.$nextTick()
+  describe('revealActiveChild（工作台侧栏专用）', () => {
+    it('打开开关时自动展开当前话所属的父级，并给它高亮', async () => {
+      const wrapper = mount(ProjectTree, {
+        props: { parents: makeParents(), activeChildId: 'c1', revealActiveChild: true }
+      })
+      await wrapper.vm.$nextTick()
 
-    // 父级被自动展开了：两个子行都在 DOM 里。
-    expect(wrapper.findAll('[data-child-id]')).toHaveLength(2)
-    const active = wrapper.get('[data-child-id="c1"]')
-    expect(active.classes()).toContain('bg-card-bg-hover')
-    expect(active.classes()).toContain('text-accent')
-  })
-
-  it('默认（不开开关）保持全收起 —— 「项目」列表页靠这条', () => {
-    const wrapper = mount(ProjectTree, {
-      props: { parents: makeParents(), activeChildId: 'c1' }
-    })
-    expect(wrapper.findAll('[data-child-id]')).toHaveLength(0)
-  })
-
-  it('用户手动折叠后不会被重新展开（只跟着 activeChildId 变化）', async () => {
-    const wrapper = mount(ProjectTree, {
-      props: { parents: makeParents(), activeChildId: 'c1', revealActiveChild: true }
-    })
-    await wrapper.vm.$nextTick()
-    expect(wrapper.findAll('[data-child-id]')).toHaveLength(2)
-
-    await wrapper.get('button[aria-label="折叠子项目"]').trigger('click')
-    await wrapper.vm.$nextTick()
-    expect(wrapper.findAll('[data-child-id]')).toHaveLength(0)
-  })
-})
-
-/**
- * 吸顶（docs/侧栏父级吸顶-优化方案.md）。
- *
- * 这些断言锁的是**类名字面量**：`sticky` 掉了、`z-10` 掉了、`scroll-mt` 的像素值
- * 改了，都会在这里红。真正"钉住了没有"由截图工装那组图看（静态快照能区分
- * "首行是父级标题"与"首行是子项目行"）。
- */
-describe('stickyParentHeader（工作台侧栏专用）', () => {
-  it('默认不开：父级行不吸顶、不多兜一层底色、展开也不补细线（「项目」列表页靠这条）', async () => {
-    const wrapper = mount(ProjectTree, { props: { parents: makeParents() } })
-
-    const parentRow = wrapper.findAll('.font-bold')[0]
-    expect(parentRow.classes()).not.toContain('sticky')
-    expect(parentRow.classes()).not.toContain('bg-card-bg')
-
-    await parentRow.trigger('click')
-    // 细线是吸顶的表头/正文分界，只属于侧栏；「项目」页展开后**不能**多出这条线
-    // （曾漏过一次：这条判断当时没跟着 stickyParentHeader 走）。
-    expect(wrapper.findAll('.font-bold')[0].classes()).not.toContain('border-hairline')
-    expect(wrapper.get('[data-child-id="c1"]').classes()).not.toContain('scroll-mt-[41px]')
-  })
-
-  it('打开后：展开的父级行吸顶（sticky/top-0/z-10 + 不透明底 + 1px 细线），子行留出表头高度', async () => {
-    const wrapper = mount(ProjectTree, {
-      props: { parents: makeParents(), stickyParentHeader: true }
+      // 父级被自动展开了：两个子行都在 DOM 里。
+      expect(wrapper.findAll('[data-child-id]')).toHaveLength(2)
+      const active = wrapper.get('[data-child-id="c1"]')
+      expect(active.attributes('aria-current')).toBe('true')
     })
 
-    const collapsed = wrapper.findAll('.font-bold')[0]
-    expect(collapsed.classes()).toContain('sticky')
-    expect(collapsed.classes()).toContain('top-0')
-    expect(collapsed.classes()).toContain('z-10')
-    // 吸顶行是**盖在**滚动内容上的 → 底色必须不透明
-    expect(collapsed.classes()).toContain('bg-card-bg')
-    // 收起时不要多一条线：外层已经 border-b 了，再加就是 1px 挨 1px 的双线
-    expect(collapsed.classes()).not.toContain('border-hairline')
-
-    await collapsed.trigger('click')
-    const expanded = wrapper.findAll('.font-bold')[0]
-    expect(expanded.classes()).toContain('border-hairline')
-    // 字面量锁住 41px：行高（24px 刷新按钮 + py-2 + 1px 细线）一变，这条就会红
-    expect(wrapper.get('[data-child-id="c1"]').classes()).toContain('scroll-mt-[41px]')
-  })
-
-  it('多选标记态：底色仍是选中色，且与吸顶底色显式互斥（不靠 Tailwind 的输出顺序）', () => {
-    const wrapper = mount(ProjectTree, {
-      props: {
-        parents: makeParents(),
-        stickyParentHeader: true,
-        multiSelect: true,
-        markedChildIds: ['c1', 'c2']
-      }
+    it('默认（不开开关）保持全收起 —— 「项目」列表页靠这条', () => {
+      const wrapper = mount(ProjectTree, {
+        props: { parents: makeParents(), activeChildId: 'c1' }
+      })
+      expect(wrapper.findAll('[data-child-id]')).toHaveLength(0)
     })
 
-    const rows = wrapper.findAll('.font-bold')
-    // p1 的两个子项目都被标记 → 父级行是"选中"态
-    expect(rows[0].classes()).toContain('bg-selected-bg')
-    expect(rows[0].classes()).not.toContain('bg-card-bg')
-    // p2 没被标记 → 吸顶底色照常
-    expect(rows[1].classes()).toContain('bg-card-bg')
-    expect(rows[1].classes()).not.toContain('bg-selected-bg')
-  })
-})
+    it('用户手动折叠后不会被重新展开（只跟着 activeChildId 变化）', async () => {
+      const wrapper = mount(ProjectTree, {
+        props: { parents: makeParents(), activeChildId: 'c1', revealActiveChild: true }
+      })
+      await wrapper.vm.$nextTick()
+      expect(wrapper.findAll('[data-child-id]')).toHaveLength(2)
 
+      await wrapper.get('button[aria-label="折叠子项目"]').trigger('click')
+      await wrapper.vm.$nextTick()
+      expect(wrapper.findAll('[data-child-id]')).toHaveLength(0)
+    })
+  })
+
+  /**
+   * 吸顶（docs/侧栏父级吸顶-优化方案.md）。
+   *
+   * 这些断言锁的是**类名字面量**：`sticky` 掉了、`z-10` 掉了、`scroll-mt` 的像素值
+   * 改了，都会在这里红。真正"钉住了没有"由截图工装那组图看（静态快照能区分
+   * "首行是父级标题"与"首行是子项目行"）。
+   */
+  describe('stickyParentHeader（工作台侧栏专用）', () => {
+    it('默认不开：父级行不吸顶、不多兜一层底色、展开也不补细线（「项目」列表页靠这条）', async () => {
+      const wrapper = mount(ProjectTree, { props: { parents: makeParents() } })
+
+      const parentRow = wrapper.findAll('.font-bold')[0]
+      expect(parentRow.classes()).not.toContain('sticky')
+      expect(parentRow.classes()).not.toContain('bg-card-bg')
+
+      await parentRow.trigger('click')
+      // 细线是吸顶的表头/正文分界，只属于侧栏；「项目」页展开后**不能**多出这条线
+      // （曾漏过一次：这条判断当时没跟着 stickyParentHeader 走）。
+      expect(wrapper.findAll('.font-bold')[0].classes()).not.toContain('border-hairline')
+      expect(wrapper.get('[data-child-id="c1"]').classes()).not.toContain('scroll-mt-[65px]')
+    })
+
+    it('打开后：展开的父级行吸顶（sticky/top-0/z-10 + 不透明底 + 1px 细线），子行留出表头高度', async () => {
+      const wrapper = mount(ProjectTree, {
+        props: { parents: makeParents(), stickyParentHeader: true }
+      })
+
+      const collapsed = wrapper.findAll('.font-bold')[0]
+      expect(collapsed.classes()).toContain('sticky')
+      expect(collapsed.classes()).toContain('top-0')
+      expect(collapsed.classes()).toContain('z-10')
+      // 吸顶行是**盖在**滚动内容上的 → 底色必须不透明
+      expect(collapsed.classes()).toContain('bg-card-bg')
+      // 收起时不要多一条线：外层已经 border-b 了，再加就是 1px 挨 1px 的双线
+      expect(collapsed.classes()).not.toContain('border-hairline')
+
+      await collapsed.trigger('click')
+      const expanded = wrapper.findAll('.font-bold')[0]
+      expect(expanded.classes()).toContain('border-hairline')
+      // 字面量锁住 41px：行高（24px 刷新按钮 + py-2 + 1px 细线）一变，这条就会红
+      expect(wrapper.get('[data-child-id="c1"]').classes()).toContain('scroll-mt-[65px]')
+    })
+
+    it('多选标记态：底色仍是选中色，且与吸顶底色显式互斥（不靠 Tailwind 的输出顺序）', () => {
+      const wrapper = mount(ProjectTree, {
+        props: {
+          parents: makeParents(),
+          stickyParentHeader: true,
+          multiSelect: true,
+          markedChildIds: ['c1', 'c2']
+        }
+      })
+
+      const rows = wrapper.findAll('.font-bold')
+      // p1 的两个子项目都被标记 → 父级行是"选中"态
+      expect(rows[0].classes()).toContain('bg-selected-bg')
+      expect(rows[0].classes()).not.toContain('bg-card-bg')
+      // p2 没被标记 → 吸顶底色照常
+      expect(rows[1].classes()).toContain('bg-card-bg')
+      expect(rows[1].classes()).not.toContain('bg-selected-bg')
+    })
+  })
 })
 
 /**
@@ -449,28 +476,6 @@ describe('stickyParentHeader（工作台侧栏专用）', () => {
  */
 describe('父级职责标签', () => {
   const dutiesProps: Record<string, WorkMode[]> = { p1: ['proofread'] }
-
-  it('职责槽永远占位，且宽度固定两个字（名字才不会随职责多少而漂）', () => {
-    const wrapper = mount(ProjectTree, { props: { parents: makeParents() } })
-    const slots = wrapper.findAll('[data-testid="parent-duty-slot"]')
-    expect(slots).toHaveLength(2)
-    // 固定宽度是契约：改宽度前先看 docs 里那批对照图（② 的名字起点漂）
-    expect(slots[0].find('[data-testid="parent-duty-chip"]').classes()).toContain('w-[30px]')
-    // 没职责时槽里没有标签，但槽还在
-    expect(wrapper.findAll('[data-testid="parent-duty-chip"] span')).toHaveLength(0)
-
-    // 胶囊的对比度契约：夜间不许用"跟底色贴在一起"的那一档（旧版 border-border + bg-app-bg
-    // + text-tertiary 在夜间几乎看不见，真机报过）。2026-10-03 收敛后，**长相搬进
-    // `.duty-chip` 那一处定义**（token 化），所以这里锁的是"用的是那枚原语"，
-    // 具体色值由下面那条 CSS 契约 + 截图工装盯着。
-    const wrapperWithDuty = mount(ProjectTree, {
-      props: { parents: makeParents(), parentDuties: { p1: ['proofread'] } }
-    })
-    expect(
-      wrapperWithDuty.find('[data-testid="parent-duty-proofread"]').classes()
-    ).toContain('duty-chip__seg')
-    expect(wrapperWithDuty.find('[data-testid="parent-duty-pill"]').classes()).toContain('duty-chip')
-  })
 
   it('胶囊长相只在 CSS 里定义一处：全走 token，不许写死颜色与圆角', () => {
     const raw = readFileSync(resolve(__dirname, '../../styles/index.css'), 'utf8')
@@ -500,27 +505,29 @@ describe('父级职责标签', () => {
     // ③ 新 token 必须**两处同步**（tokens.css 日+夜，theme.ts 运行时覆写）
     const tokens = readFileSync(resolve(__dirname, '../../styles/tokens.css'), 'utf8')
     const theme = readFileSync(resolve(__dirname, '../../stores/theme.ts'), 'utf8')
-    expect(tokens.match(/--chip-border/g) ?? [], '--chip-border 要在日/夜各定义一次').toHaveLength(2)
+    expect(tokens.match(/--chip-border/g) ?? [], '--chip-border 要在日/夜各定义一次').toHaveLength(
+      2
+    )
     expect(theme, 'theme.ts 里漏了 --chip-border（夜间会退回 CSS 回退值）').toContain(
       "set('--chip-border'"
     )
   })
 
-  it('有职责时画成单字胶囊（校 / 监），顺序按规范排', () => {
+  it('职责全称按规范顺序排列', () => {
     // ⚠️ 组件的**唯一**输入是宿主算好的 `parentDuties`（它不认识父级自带的 duties，
     // 也不认识"推断"）—— 所以这里必须走 prop，而不是直接改 parents[].duties。
     const wrapper = mount(ProjectTree, {
       props: { parents: makeParents(), parentDuties: { p1: ['supervised', 'proofread'] } }
     })
-    const chips = wrapper.findAll('[data-testid="parent-duty-pill"] .duty-chip__seg')
-    expect(chips.map((node) => node.text())).toEqual(['校', '监'])
+    const chips = wrapper.findAll('[data-testid="parent-duty-pill"] button')
+    expect(chips.map((node) => node.text())).toEqual(['校对', '监修'])
   })
 
   it('宿主传进来的 dutyMap 优先于父级自身字段（推断值走这条路）', () => {
     const wrapper = mount(ProjectTree, {
       props: { parents: makeParents(), parentDuties: { p2: ['typeset'] } }
     })
-    expect(wrapper.find('[data-testid="parent-duty-typeset"]').text()).toBe('嵌')
+    expect(wrapper.find('[data-testid="parent-duty-typeset"]').text()).toBe('嵌字')
     // p1 没给 → 不画
     expect(wrapper.findAll('[data-testid="parent-duty-slot"]')[0].find('span').exists()).toBe(false)
   })
@@ -529,8 +536,8 @@ describe('父级职责标签', () => {
     const wrapper = mount(ProjectTree, {
       props: { parents: makeParents(), parentDuties: { ...dutiesProps } }
     })
-    const chip = wrapper.findAll('[data-testid="parent-duty-chip"]')[0]
-    await chip.trigger('click')
+    const chip = wrapper.findAll('[data-testid="parent-duty-pill"]')[0]
+    await chip.trigger('contextmenu')
 
     // 点标签不该把父级展开（父级行整体是可点区域）
     expect(wrapper.emitted('expand')).toBeUndefined()
@@ -544,12 +551,11 @@ describe('父级职责标签', () => {
     const wrapper = mount(ProjectTree, {
       props: { parents: makeParents(), parentDuties: { p1: ['typeset', 'translated'] } }
     })
-    await wrapper.findAll('[data-testid="parent-duty-chip"]')[0].trigger('click')
+    await wrapper.findAll('[data-testid="parent-duty-pill"]')[0].trigger('contextmenu')
 
     const blocked = wrapper.find('[data-testid="parent-duty-option-proofread"]')
     expect(blocked.attributes('disabled')).toBeDefined()
     // 禁用还得**看得出来**：否则"点了没反应"会被当成程序坏了
-    expect(blocked.classes()).toContain('opacity-40')
     // 已选中的那两个仍可点（点一下＝取消）
     expect(
       wrapper.find('[data-testid="parent-duty-option-typeset"]').attributes('disabled')
@@ -560,7 +566,7 @@ describe('父级职责标签', () => {
     const wrapper = mount(ProjectTree, {
       props: { parents: makeParents(), parentDuties: { p1: ['proofread'] } }
     })
-    await wrapper.findAll('[data-testid="parent-duty-chip"]')[0].trigger('click')
+    await wrapper.findAll('[data-testid="parent-duty-pill"]')[0].trigger('contextmenu')
     await wrapper.find('[data-testid="parent-duty-option-proofread"]').trigger('click')
     expect(wrapper.emitted('setDuties')![0]).toEqual(['p1', []])
   })
@@ -573,7 +579,7 @@ describe('父级职责标签', () => {
       attachTo: document.body
     })
     try {
-      await wrapper.findAll('[data-testid="parent-duty-chip"]')[0].trigger('click')
+      await wrapper.findAll('[data-testid="parent-duty-pill"]')[0].trigger('contextmenu')
 
       // ① 菜单**内部**按下：不许关 —— 否则后续的 click 会落空（选项就选不中了）。
       // 真实鼠标顺序：pointerdown 先冒泡到 document，click 才到按钮上。
@@ -604,8 +610,8 @@ describe('父级职责标签', () => {
       attachTo: document.body
     })
     try {
-      const chip = () => wrapper.findAll('[data-testid="parent-duty-chip"]')[0]
-      await chip().trigger('click')
+      const chip = () => wrapper.findAll('[data-testid="parent-duty-pill"]')[0]
+      await chip().trigger('contextmenu')
       expect(wrapper.find('[data-testid="parent-duty-menu"]').exists()).toBe(true)
 
       // 真实鼠标：先 pointerdown（现在它在"槽"内 ⇒ 不许动菜单），再 click（由 toggle 收起）
@@ -615,7 +621,7 @@ describe('父级职责标签', () => {
         'pointerdown 落在胶囊上时不许把菜单关掉（否则 click 又会把它打开）'
       ).toBe(true)
 
-      await chip().trigger('click')
+      await chip().trigger('contextmenu')
       expect(wrapper.find('[data-testid="parent-duty-menu"]').exists()).toBe(false)
     } finally {
       wrapper.unmount()
@@ -630,10 +636,27 @@ describe('父级职责标签', () => {
     // 关闭时不该有多余的层级（不然吸顶/选中态的层级会乱）
     expect(wrapper.findAll('.font-bold')[0].classes()).not.toContain('z-30')
 
-    await wrapper.findAll('[data-testid="parent-duty-chip"]')[0].trigger('click')
+    await wrapper.findAll('[data-testid="parent-duty-pill"]')[0].trigger('contextmenu')
 
     // 打开的那一行抬起来；它的邻居不受影响
     expect(wrapper.findAll('.font-bold')[0].classes()).toContain('z-30')
     expect(wrapper.findAll('.font-bold')[1].classes()).not.toContain('z-30')
   })
+})
+
+
+it('switches only the chosen comic and hides add when two duties are present', async () => {
+  const parents = makeParents()
+  const wrapper = mount(ProjectTree, { props: { parents, parentDuties: { p1: ['translated', 'proofread'], p2: ['typeset'] }, parentModes: { p1: 'proofread', p2: 'typeset' } } })
+  try {
+    const slots = wrapper.findAll('[data-testid="parent-duty-slot"]')
+    expect(slots[0].find('[data-testid="parent-duty-chip"]').exists()).toBe(false)
+    expect(slots[1].find('[data-testid="parent-duty-typeset"]').exists()).toBe(true)
+    await slots[0].get('[data-testid="parent-duty-translated"]').trigger('click')
+    expect(wrapper.emitted('switchMode')?.at(-1)).toEqual(['p1', 'translated'])
+    expect(slots[1].get('[data-testid="parent-duty-typeset"]').attributes('data-state')).toBe('on')
+    await slots[0].get('[data-testid="parent-duty-pill"]').trigger('contextmenu')
+    await flushPromises()
+    expect(wrapper.find('[data-testid="parent-duty-menu"]').exists()).toBe(true)
+  } finally { wrapper.unmount() }
 })

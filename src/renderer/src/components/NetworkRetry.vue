@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { Button as UiButton } from '@renderer/components/ui/button'
 // NetworkRetry — slow-NAS / disconnect overlay. Shown when an IPC load is
 // taking too long or has failed. Displays a loading message, an optional
 // error string, and a retry button that emits `retry`.
@@ -33,13 +34,13 @@ const hasError = computed(() => props.error !== null && props.error !== '')
     <p v-if="hasError" class="text-danger text-xs">{{ error }}</p>
 
     <!-- Retry button -->
-    <button
+    <UiButton variant="default" size="sm"
       type="button"
-      class="rounded-badge bg-accent px-4 py-2 text-text-on-accent text-sm transition-colors hover:bg-primary-hover active:bg-primary-active"
+      class="transition-colors"
       data-testid="retry-button"
       @click="emit('retry')"
     >
       重试
-    </button>
+    </UiButton>
   </div>
 </template>

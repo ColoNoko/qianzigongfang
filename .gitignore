@@ -12,3 +12,5 @@ release
 logs/
 temp/
 *.bak-*
+
+.local-backups/

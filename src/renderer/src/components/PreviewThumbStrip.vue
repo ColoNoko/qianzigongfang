@@ -13,13 +13,15 @@ export const STRIP_ITEM_CLASS = 'h-[88px] w-[64px]'
 </script>
 
 <script setup lang="ts">
+import { useSettingsStore } from '@renderer/stores/settings'
+import { Button as UiButton } from '@renderer/components/ui/button'
 // PreviewThumbStrip — 预览 / 对照状态底部那条"胶片"（照着看图软件的缩略图条做）。
 //
-// 数据来源是**上一级给的**（`Project.vue` 转手 `ProjectThumbList` 已经渲染好的那份内存缩略图）：
-// 这里一张图都不重新生成、也不发任何 IPC —— 缩略图条卡不卡，全看这一条设计。
+// 图片由宿主的共享缩略图服务提供；滚动时报告可见项与附近项，复用网格缓存。
+// 组件自己不读取或解码文件。
 //
 // 根元素自己就是 `absolute bottom-0`：调用方（工作台的内容区）直接往里一放就是"贴着底部"。
-import { nextTick, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onBeforeUnmount, ref, watch } from 'vue'
 
 export interface StripItem {
   /** 与 `comparePair.psd.absPath` 同一个键（翻页、重扫后仍然对得上）。 */
@@ -33,10 +35,21 @@ export interface StripItem {
 const props = defineProps<{ items: StripItem[]; activeId: string }>()
 
 const emit = defineEmits<{
+  (e: 'visible', ids: string[], nearby: string[]): void
+  (e: 'imageError', id: string, url: string): void
   (e: 'pick', id: string): void
   (e: 'close'): void
 }>()
 
+const settings = useSettingsStore()
+const trackWidth = ref(0)
+const itemWidth = computed(() => {
+  const target = { 小: 64, 中: 88, 大: 112 }[settings.thumbSizeValid]
+  const width = trackWidth.value || target
+  const count = Math.max(1, Math.floor((width + 8) / (target + 8)))
+  return (width - (count - 1) * 8) / count
+})
+watch(() => settings.thumbSizeValid, () => void nextTick(centerActive))
 const trackRef = ref<HTMLDivElement | null>(null)
 
 /**
@@ -52,10 +65,45 @@ function centerActive(): void {
   if (!active) return
   const target = active.offsetLeft - (track.clientWidth - active.offsetWidth) / 2
   track.scrollLeft = Math.max(0, target)
+  reportVisible()
 }
 
-onMounted(centerActive)
-watch(() => props.activeId, () => void nextTick(centerActive))
+let observer: ResizeObserver | undefined
+function reportVisible(): void {
+  const track = trackRef.value
+  if (!track) return
+  trackWidth.value = track.clientWidth
+  const left = track.scrollLeft,
+    right = left + track.clientWidth
+  const buttons = Array.from(track.children) as HTMLElement[]
+  const visible: string[] = [],
+    nearby: string[] = []
+  buttons.forEach((button, i) => {
+    if (button.offsetLeft + button.offsetWidth >= left && button.offsetLeft <= right)
+      visible.push(props.items[i].id)
+    else if (
+      button.offsetLeft + button.offsetWidth >= left - 144 &&
+      button.offsetLeft <= right + 144
+    )
+      nearby.push(props.items[i].id)
+  })
+  emit('visible', visible, nearby)
+}
+onMounted(() => {
+  centerActive()
+  if (typeof ResizeObserver !== 'undefined' && trackRef.value) {
+    observer = new ResizeObserver(reportVisible)
+    observer.observe(trackRef.value)
+  }
+})
+onBeforeUnmount(() => {
+  observer?.disconnect()
+  emit('visible', [], [])
+})
+watch(
+  () => props.activeId,
+  () => void nextTick(centerActive)
+)
 watch(
   () => props.items.length,
   () => void nextTick(centerActive)
@@ -70,18 +118,20 @@ watch(
     <div class="flex items-center gap-2 px-2 py-1.5">
       <div
         ref="trackRef"
+        @scroll="reportVisible"
         class="flex min-w-0 flex-1 items-center gap-2 overflow-x-auto pb-0.5"
         data-testid="viewer-thumb-track"
       >
-        <button
+        <UiButton variant="outline" size="sm"
           v-for="item in items"
           :key="item.id"
           type="button"
-          class="relative flex shrink-0 items-center justify-center overflow-hidden rounded-md border-2 bg-media-bg transition-colors hover:border-accent"
+          class="relative flex shrink-0 items-center justify-center overflow-hidden transition-colors"
           :class="[
-            STRIP_ITEM_CLASS,
+
             item.id === activeId ? 'border-selected-border' : 'border-border'
           ]"
+          :style="{ width: itemWidth + 'px', height: Math.round(itemWidth * 1.35) + 'px' }"
           :data-active="item.id === activeId ? 'true' : 'false'"
           :title="item.filename"
           :aria-label="`第 ${item.pageNumber} 张：${item.filename}`"
@@ -94,6 +144,7 @@ watch(
             class="max-h-full max-w-full object-contain"
             :alt="item.filename"
             draggable="false"
+            @error="emit('imageError', item.id, item.thumbUrl!)"
           />
           <span v-else class="text-[12px] text-text-tertiary">{{ item.pageNumber }}</span>
           <!-- 页码：压一个实底小角标。用 --app-bg 而不是半透明 —— 半透明会让它在深浅两套主题下时浓时淡。 -->
@@ -102,21 +153,29 @@ watch(
           >
             {{ item.pageNumber }}
           </span>
-        </button>
+        </UiButton>
       </div>
 
-      <button
+      <UiButton variant="ghost" size="sm"
         type="button"
-        class="flex h-6 w-6 shrink-0 items-center justify-center rounded-badge text-text-secondary transition-colors hover:bg-card-bg-hover hover:text-text-primary"
+        class="flex w-6 shrink-0 items-center justify-center transition-colors"
         aria-label="收起缩略图条"
         title="收起缩略图条"
         data-testid="viewer-thumb-strip-collapse"
         @click="emit('close')"
       >
-        <svg class="h-[18px] w-[18px]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+        <svg
+          class="h-[18px] w-[18px]"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.6"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+        >
           <polyline points="6 9 12 15 18 9" />
         </svg>
-      </button>
+      </UiButton>
     </div>
   </div>
 </template>

@@ -1,8 +1,9 @@
 // @vitest-environment node
 
-import { describe, it, expect, beforeAll, afterAll } from 'vitest'
+import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from 'vitest'
 import { basename, resolve, join } from 'path'
-import { mkdir, writeFile, rm, stat, utimes } from 'fs/promises'
+import { tmpdir } from 'os'
+import { mkdir, writeFile, rm, stat, utimes, mkdtemp } from 'fs/promises'
 import { scanChildProject } from '../scanner'
 import { computeProgress, countablePsdStats } from '../../../shared/status'
 
@@ -17,6 +18,22 @@ describe('scanChildProject', () => {
   afterAll(async () => {
     // Clean up temp directory
     await rm(TEMP_DIR, { recursive: true, force: true })
+  })
+
+  it.each(['1.jpg', '01.jpg', '001.jpg'])('matches padded PSD page numbers to %s', async image => {
+    const folder=join(TEMP_DIR, 'numeric-' + image)
+    await mkdir(folder, { recursive:true })
+    await writeFile(join(folder,'001.psd'), '')
+    await writeFile(join(folder,image), '')
+    expect((await scanChildProject(folder)).jpgPairs[0].jpgPath).toBe(join(folder,image))
+  })
+  it('prefers an exact stem when padded alternatives coexist', async () => {
+    const folder=join(TEMP_DIR,'numeric-priority')
+    await mkdir(folder,{recursive:true})
+    for(const file of ['001.psd','1.jpg','01.jpg','001.png','page1.psd']) await writeFile(join(folder,file),'')
+    const result=await scanChildProject(folder)
+    expect(result.jpgPairs.find(pair=>pair.psd.absPath.endsWith('001.psd'))?.jpgPath).toBe(join(folder,'001.png'))
+    expect(result.jpgPairs.find(pair=>pair.psd.absPath.endsWith('page1.psd'))?.jpgPath).toBeUndefined()
   })
 
   it('groups jpg + psd + txt with the same stem', async () => {
@@ -221,5 +238,77 @@ describe('scanChildProject', () => {
 
     expect(result.rootMissing).toBe(false)
     expect(result.errors).toHaveLength(0)
+  })
+})
+
+/**
+ * 2026-10-05：从 0.4.0 干净分享包移植"扫描可靠性"第一批里的**状态与排除目录**。
+ *
+ * ⚠️ 移植边界写在这：0.4.0 的扫描器还会按文件时间**推断完成度**（`isTypesetDone`），
+ * 那一半**刻意不搬** —— 本项目 §5 的语义是"完成度只认手动标记"，上面那两条
+ * 旧锁（`不再按 PSD 自身时间推导完成` / `不再按原图时间推导完成`）就守着这件事。
+ */
+describe('scanChildProject — status 与排除目录（2026-10-05 移植）', () => {
+  // ⚠️ 这个 describe 用真 /tmp（mkdtemp），不用上面的 TEMP_DIR：造"读不到"靠 chmod 000，
+  // 而 TEMP_DIR 在 /mnt/d（DrvFs），chmod 不生效（实测 readdir 不会 EACCES）。
+  let work: string
+
+  beforeEach(async () => {
+    work = await mkdtemp(join(tmpdir(), 'qianzi-scanner-'))
+  })
+
+  afterEach(async () => {
+    await rm(work, { recursive: true, force: true })
+  })
+
+  it('读全 ⇒ status=complete', async () => {
+    const dir = join(work, 'status-complete')
+    await mkdir(dir, { recursive: true })
+    await writeFile(join(dir, '01.jpg'), Buffer.alloc(0))
+    await writeFile(join(dir, '01.psd'), Buffer.alloc(0))
+
+    const result = await scanChildProject(dir)
+
+    expect(result.status).toBe('complete')
+    expect(result.rootMissing).toBe(false)
+    expect(result.errors).toHaveLength(0)
+  })
+
+  it('目录不在 ⇒ status=unavailable（rootMissing 照旧）', async () => {
+    const result = await scanChildProject(join(work, 'does-not-exist-12345'))
+
+    expect(result.status).toBe('unavailable')
+    expect(result.rootMissing).toBe(true)
+  })
+
+  it('排除目录里的 PSD 与图不计入这一话（导出目录不会被当成"多画了几页"）', async () => {
+    const dir = join(work, 'excluded-output')
+    const output = join(dir, 'output')
+    await mkdir(output, { recursive: true })
+    await writeFile(join(dir, '01.jpg'), Buffer.alloc(0))
+    await writeFile(join(dir, '01.psd'), Buffer.alloc(0))
+    await writeFile(join(output, '02.jpg'), Buffer.alloc(0))
+    await writeFile(join(output, '02.psd'), Buffer.alloc(0))
+
+    const result = await scanChildProject(dir, [output])
+
+    expect(result.status).toBe('complete')
+    expect(result.jpgPairs.map((pair) => pair.psd.absPath)).toEqual([join(dir, '01.psd')])
+    expect(result.imageFiles).toEqual([join(dir, '01.jpg')])
+  })
+
+  it('不传排除目录 ⇒ 行为与改前一致（子目录照旧被扫）', async () => {
+    const dir = join(work, 'excluded-none')
+    const sub = join(dir, 'output')
+    await mkdir(sub, { recursive: true })
+    await writeFile(join(dir, '01.jpg'), Buffer.alloc(0))
+    await writeFile(join(dir, '01.psd'), Buffer.alloc(0))
+    await writeFile(join(sub, '02.psd'), Buffer.alloc(0))
+
+    const result = await scanChildProject(dir)
+
+    expect(result.jpgPairs.map((pair) => pair.psd.absPath).sort()).toEqual(
+      [join(dir, '01.psd'), join(sub, '02.psd')].sort()
+    )
   })
 })

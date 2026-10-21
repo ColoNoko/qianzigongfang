@@ -10,7 +10,8 @@ import vue from '@vitejs/plugin-vue'
  * 因此主配置排除 `src/renderer/src/visual/**`，由本配置单独承载。
  *
  *   pnpm run visual        # 只跑视觉检查并出图
- *   pnpm run test          # 常规测试（不含视觉检查）
+ *   pnpm run test          # 日常核心回归（不含视觉检查）
+ *   pnpm run test:full     # 完整测试（不含视觉检查）
  */
 // 与 electron.vite.config.ts 注入**同一个**版本号（唯一真源 = package.json）
 const APP_VERSION = (

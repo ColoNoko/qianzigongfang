@@ -11,6 +11,7 @@
 //   pct === 0                  → grey track only, full verbatim text
 //   pct > 0                    → fill width = pct%, text remains theme text color
 import { computed } from 'vue'
+import { Progress } from './ui/progress'
 import type { ChapterProgress, WorkMode } from '@shared/types'
 import { WORK_MODE_LABELS } from '@shared/modes'
 
@@ -26,9 +27,6 @@ const props = withDefaults(
 const hasFill = computed(() => (props.progress.pct ?? 0) > 0)
 
 // Inline width style for the accent overlay — pct% of the track width.
-const fillStyle = computed(() => ({
-  width: `${props.progress.pct ?? 0}%`
-}))
 
 // Centered label. The "无文件" fallback only applies when there are no PSDs
 // at all (pct === null).
@@ -56,12 +54,6 @@ const label = computed(() => {
     </span>
 
     <!-- 轨道（中性底，永远不用强调色）+ 完成色填充 -->
-    <div class="relative h-1.5 min-w-0 flex-1 overflow-hidden rounded-full bg-media-bg">
-      <div
-        v-if="hasFill"
-        class="absolute inset-y-0 left-0 rounded-full bg-done transition-[width] duration-500 ease-out"
-        :style="fillStyle"
-      />
-    </div>
+    <Progress :model-value="progress.pct ?? 0" :aria-label="label" class="h-1.5 min-w-0 flex-1 bg-media-bg" />
   </div>
 </template>

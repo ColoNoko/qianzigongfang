@@ -1,430 +1,700 @@
 <script setup lang="ts">
-/**
- * 「进度」页（2026-10-03）—— 一张**欠账清单**。
- *
- * 逐本漫画回答："按这本的职责，我还欠几话没熟、多久没烤肉了。"
- * 与「成就」页的分工：成就是**回顾我干过多少**（按年月）；这一页是**逐本看当前欠账**。
- *
- * 口径全部在 `@shared/progress`（纯函数，31 条锁）：
- *   · 熟 = 该话在**当前职责**那个模式下所有文件都完成；
- *   · 多职责**分开展示**（点胶囊切换，不合并成"都完成"）；
- *   · 最新话优先按**标记完成时间**、保底用**最大集数**；
- *   · 距上次用**标记完成时间戳**（不用文件时间 —— 那个有历史脏值）。
- * 这一页只负责取数与摆放，不自己算口径。
- */
-import { computed, onMounted, ref } from 'vue'
-import { useRouter } from 'vue-router'
-import EmptyState from '@renderer/components/EmptyState.vue'
-import NetworkRetry from '@renderer/components/NetworkRetry.vue'
-import AppSelect from '@renderer/components/AppSelect.vue'
-import ProgressTimelineDrawer from '@renderer/features/progress/ProgressTimelineDrawer.vue'
-import { useProjectWorkspace } from '@renderer/stores/projectWorkspace'
-import { useAchievementsStore } from '@renderer/stores/achievements'
-import { useSettingsStore } from '@renderer/stores/settings'
-import { useParentDuties } from '@renderer/features/project/useParentDuties'
-import { childWorkbenchPath } from '@renderer/features/project/project-route'
-import { formatChapterNumber } from '@shared/chapter'
-import { WORK_MODE_LABELS, WORK_MODE_SHORT_LABELS } from '@shared/modes'
+import { computed, onMounted, ref, watchEffect } from 'vue';
+import { useRouter } from 'vue-router';
+import { Button } from '@renderer/components/ui/button';
+import { Input } from '@renderer/components/ui/input';
+import { Progress } from '@renderer/components/ui/progress';
+import { ToggleGroup, ToggleGroupItem } from '@renderer/components/ui/toggle-group';
 import {
-  buildChapterDutyFacts,
-  buildTimelineEvents,
-  computeParentDutyProgress,
-  latestActiveChildId,
-  parseProgressSort,
-  PROGRESS_SORT_OPTIONS,
-  sortProgressRows,
-  type ChapterDutyFact,
-  type ParentDutyProgress,
-  type ProgressTimelineEvent,
-  type TimelinePlace
-} from '@shared/progress'
-import type { WorkMode } from '@shared/types'
+  Collapsible,
+  CollapsibleTrigger,
+  CollapsibleContent
+} from '@renderer/components/ui/collapsible';
+import { ChevronDown, ChevronRight, History, RefreshCw, Search } from 'lucide-vue-next';
+import WorkModeSegments from '@renderer/components/WorkModeSegments.vue';
+import AppSelect from '@renderer/components/AppSelect.vue';
+import HomeCover from '@renderer/features/dashboard/HomeCover.vue';
+import NetworkRetry from '@renderer/components/NetworkRetry.vue';
+import ProgressTimelineDrawer from '@renderer/features/progress/ProgressTimelineDrawer.vue';
+import { workProgress } from '@renderer/features/progress/work-progress';
+import { useProjectWorkspace } from '@renderer/stores/projectWorkspace';
+import { useAchievementsStore } from '@renderer/stores/achievements';
+import { useSettingsStore } from '@renderer/stores/settings';
+import { useParentDuties } from '@renderer/features/project/useParentDuties';
+import { childWorkbenchPath } from '@renderer/features/project/project-route';
+import { buildTimelineEvents, timelineDayLabel } from '@shared/progress';
+import { formatChapterNumber } from '@shared/chapter';
+import { WORK_MODE_LABELS } from '@shared/modes';
+import type { ChildProject } from '@shared/types';
 
-const workspace = useProjectWorkspace()
-const achievements = useAchievementsStore()
-const settings = useSettingsStore()
-const router = useRouter()
-const { dutyMap } = useParentDuties()
-
-/**
- * 每本漫画当前看哪个职责（多职责时点胶囊切）。
- *
- * **只存在这一页的内存里、不写库** —— 它是个"看数据的角度"，不是设置；
- * 真正的职责（这本归我干什么）在侧栏 / 项目页那枚胶囊上设置。
- */
-const dutyChoice = ref<Record<string, WorkMode>>({})
-
-/**
- * 排序档位**存在设置里**（`ui.progressSort`，与 `ui.childSortOrder` 同一条路），
- * 所以离开这一页再回来、乃至重启程序，都还是你上次选的那一档。
- */
-const sortChoice = computed(() => parseProgressSort(settings.progressSort))
-const drawerOpen = ref(false)
-const refreshing = ref(false)
-const treeLoading = ref(workspace.parents.length === 0)
-/**
- * 项目树读不到时的原因（`null` = 没出错）。
- *
- * ⚠️ **失败 ≠ 空**：读不到就和"还没有项目"共用空状态的话，界面会说假话
- * （用户看到"还没有项目"，实际是磁盘/IPC 出了问题）—— 2026-10-03 审查修的。
- * 失败必须能看见，且给一条重试的路；错误原文照实显示（与 `Project.vue` 同一套路）。
- */
-const loadError = ref<string | null>(null)
-
-/** 拉项目树，失败**不抛**：记进 `loadError`，由渲染层展示与重试。 */
-async function loadParentsSafely(): Promise<void> {
+const workspace = useProjectWorkspace();
+const achievements = useAchievementsStore();
+const settings = useSettingsStore();
+const router = useRouter();
+const { dutyMap } = useParentDuties();
+const mode = ref(settings.activeWorkMode);
+const filter = ref('all');
+const search = ref('');
+const sort = ref('recent');
+const expanded = ref<Record<string, boolean>>({});
+const drawerOpen = ref(false);
+const refreshing = ref(false);
+const loading = ref(workspace.parents.length === 0);
+const loadError = ref<string | null>(null);
+const sortOptions = [
+  { value: 'recent', label: '最近完工优先' },
+  { value: 'remaining', label: '剩余页数最多' },
+  { value: 'oldest', label: '最久未完工' }
+];
+const filters = [
+  { value: 'all', label: '全部' },
+  { value: 'active', label: '进行中' },
+  { value: 'pending', label: '未开始' },
+  { value: 'done', label: '已完成' },
+  { value: 'stale', label: '久未处理' }
+];
+watchEffect(() => {
+  if (!settings.enabledWorkModes.includes(mode.value)) mode.value = settings.enabledWorkModes[0];
+});
+async function refresh() {
+  if (refreshing.value) return;
+  refreshing.value = true;
   try {
-    await workspace.loadParents()
-    loadError.value = null
+    await workspace.loadParents();
+    await achievements.refresh();
+    loadError.value = null;
   } catch (error) {
-    loadError.value = error instanceof Error ? error.message : String(error)
-  }
-}
-
-onMounted(async () => {
-  if (workspace.parents.length === 0) await loadParentsSafely()
-  treeLoading.value = false
-  // 标记记录是**权威口径**（全量、不依赖"这一话被打开过"）；`useParentDuties` 也会拉一次。
-  // 它自己吞错误（读不到只记 console），所以这一页的错误状态只由项目树决定。
-  if (!achievements.loaded) void achievements.refresh()
-})
-
-/** childId → 标记记录（主进程 `memoryMarkStatistics` 的形状）。 */
-const statsByChild = computed(() => new Map(achievements.statistics.map((s) => [s.childId, s])))
-
-/**
- * 每本漫画的"事实"（项目树 + 标记记录合成），**算一次两处用**：
- * 列表要它、点标题跳转也要它（跳哪一话就是按同一份事实选的）。
- */
-const factsByParent = computed(() => {
-  const map = new Map<string, ChapterDutyFact[]>()
-  for (const parent of workspace.parents) {
-    map.set(parent.id, buildChapterDutyFacts(parent.children, statsByChild.value))
-  }
-  return map
-})
-
-/** 当前该看哪个职责：用户在本页点过就用点的那个，否则用职责表里第一个。 */
-function activeDutyOf(parentId: string, duties: WorkMode[]): WorkMode | null {
-  const chosen = dutyChoice.value[parentId]
-  if (chosen && duties.includes(chosen)) return chosen
-  return duties[0] ?? null
-}
-
-const rows = computed<ParentDutyProgress[]>(() =>
-  workspace.parents.map((parent) => {
-    const duties = dutyMap.value[parent.id] ?? []
-    return computeParentDutyProgress({
-      parentId: parent.id,
-      title: parent.title,
-      duties,
-      duty: activeDutyOf(parent.id, duties),
-      lastMtimeMs: parent.lastMtimeMs,
-      facts: factsByParent.value.get(parent.id) ?? []
-    })
-  })
-)
-
-const sortedRows = computed(() =>
-  sortProgressRows(rows.value, sortChoice.value.key, sortChoice.value.direction)
-)
-
-/**
- * 排序项（2026-10-03 用户定的文案 + 方向）。
- * ⚠️ 标签里的箭头 = **那一列字面上的方向**：完成度↓ 就是"完成度高的在前"，
- * 间隔↓ 就是"间隔长的在前"（"从未"算最长）。键与方向的实现见 `@shared/progress`。
- */
-/** 下拉的档位 —— 唯一出处是 `@shared/progress`（本页不手抄，免得和设置里的校验漂移）。 */
-// 拷一份可变数组：`AppSelect` 的 options 类型是可变的，而唯一出处那份是 readonly
-const SORT_OPTIONS = [...PROGRESS_SORT_OPTIONS]
-
-function onSortChange(value: string | number): void {
-  settings.setProgressSort(String(value))
-}
-
-const busy = computed(() => treeLoading.value || (!achievements.loaded && achievements.loading))
-/** 空状态只在"确实读到了、而且真的一本都没有"时出现（读不到走上面的错误块）。 */
-const isEmpty = computed(
-  () => !busy.value && !loadError.value && workspace.parents.length === 0
-)
-
-async function onRefresh(): Promise<void> {
-  if (refreshing.value) return
-  refreshing.value = true
-  try {
-    // `loadParentsSafely` 与 `achievements.refresh` 都不会抛（各自吞掉并记录）
-    await Promise.all([loadParentsSafely(), achievements.refresh()])
+    loadError.value = error instanceof Error ? error.message : String(error);
   } finally {
-    refreshing.value = false
+    loading.value = false;
+    refreshing.value = false;
   }
 }
-
-/** 点职责胶囊：整行数据切到这个职责（不写库）。 */
-function pickDuty(parentId: string, duty: WorkMode): void {
-  dutyChoice.value = { ...dutyChoice.value, [parentId]: duty }
+onMounted(refresh);
+const stats = computed(() => new Map(achievements.statistics.map((s) => [s.childId, s])));
+const allRows = computed(() =>
+  workspace.parents
+    .filter((p) => dutyMap.value[p.id]?.includes(mode.value))
+    .map((p) => workProgress(p, mode.value, stats.value))
+);
+const summary = computed(() => ({
+  works: allRows.value.filter((r) => !r.complete).length,
+  chapters: allRows.value.reduce((n, r) => n + r.chapters.length - r.completed, 0),
+  remaining: allRows.value.reduce((n, r) => n + r.remaining, 0),
+  unknown: allRows.value.reduce((n, r) => n + r.unknown, 0)
+}));
+const rows = computed(() =>
+  allRows.value
+    .filter((r) => {
+      const query = search.value.trim().toLocaleLowerCase();
+      return (
+        (!query ||
+          [
+            r.parent.title,
+            ...r.chapters.map((c) => `${c.child.chapterNumber} ${c.child.projectTitle}`)
+          ].some((t) => t.toLocaleLowerCase().includes(query))) &&
+        (filter.value === 'all' || (filter.value === 'stale' ? r.stale : r.state === filter.value))
+      );
+    })
+    .sort((a, b) =>
+      sort.value === 'remaining'
+        ? b.remaining - a.remaining
+        : sort.value === 'oldest'
+          ? (a.at || Infinity) - (b.at || Infinity)
+          : b.at - a.at
+    )
+);
+const events = computed(() => {
+  const places = new Map(
+    workspace.parents.flatMap((p) =>
+      p.children.map(
+        (c) =>
+          [
+            c.id,
+            { parentTitle: p.title, chapterNumber: formatChapterNumber(c.chapterNumber) }
+          ] as const
+      )
+    )
+  );
+  return buildTimelineEvents(achievements.statistics, places, Infinity).filter(
+    (e) => e.mode === mode.value
+  );
+});
+function recent(at: number) {
+  return at ? timelineDayLabel(at, Date.now()) : '暂无完工';
 }
-
-/** 没设职责 → 去「项目」页那枚胶囊上设（本页不做原地设置，避免两处都能改）。 */
-function goSetDuties(): void {
-  void router.push('/project')
+function stateLabel(state: string) {
+  return state === 'done' ? '已完成' : state === 'active' ? '进行中' : '未开始';
 }
-
-/**
- * 点漫画名 → 跳到该漫画**最近在干的那一话**（工作台）。
- * 规则与列表里"最新话"同源（`latestActiveChildId`），点了就能直接接着干活。
- */
-function openParent(row: ParentDutyProgress): void {
-  const parent = workspace.parents.find((item) => item.id === row.parentId)
-  if (!parent) return
-  const childId = latestActiveChildId(factsByParent.value.get(parent.id) ?? [], row.duty)
-  if (!childId) return
-  const child = parent.children.find((item) => item.id === childId)
-  if (!child) return
-  void router.push(childWorkbenchPath(child.parentTitle, child.id))
+async function openChild(child: ChildProject) {
+  await settings.setActiveWorkMode(mode.value);
+  await router.push({
+    path: childWorkbenchPath(child.parentTitle, child.id),
+    query: { workMode: mode.value }
+  });
 }
-
-/**
- * 时间线：**一条 = 某天 × 某话 × 某职责**（2026-10-04 用户拍板按天切分）。
- *
- * 口径与分桶全在 `@shared/progress` 的 `buildTimelineEvents` 里（纯函数、有单测）；
- * 这一页只负责备料：① 从项目树建"某话属于哪本、显示成第几集"的表 ② 把标记记录递给它。
- */
-const timelineEvents = computed<ProgressTimelineEvent[]>(() => {
-  const where = new Map<string, TimelinePlace>()
-  for (const parent of workspace.parents) {
-    for (const child of parent.children) {
-      where.set(child.id, {
-        parentTitle: parent.title,
-        chapterNumber: formatChapterNumber(child.chapterNumber)
-      })
-    }
-  }
-  return buildTimelineEvents(achievements.statistics, where)
-})
-
-function progressPct(row: ParentDutyProgress): number {
-  if (row.totalChapters === 0) return 0
-  return Math.round((row.cookedChapters / row.totalChapters) * 100)
+function continueWork(row: ReturnType<typeof workProgress>) {
+  if (row.next) void openChild(row.next.child);
+  else expanded.value[row.parent.id] = true;
 }
-
-function uncookedText(row: ParentDutyProgress): string {
-  if (!row.duty) return '—'
-  return row.uncookedChapters === 0 ? '✓ 全熟' : `${row.uncookedChapters} 话`
-}
-
-function uncookedClass(row: ParentDutyProgress): string {
-  if (!row.duty) return 'text-text-tertiary'
-  return row.uncookedChapters === 0
-    ? 'text-[11px] font-semibold text-success'
-    : 'text-[11px] font-semibold text-done'
-}
-
-function daysText(row: ParentDutyProgress): string {
-  if (row.daysSinceLastMark === null) return row.duty ? '从未' : '—'
-  if (row.daysSinceLastMark === 0) return '今天'
-  return `${row.daysSinceLastMark} 天前`
-}
-
-/** 「上次更新」的文案：从没完整做完一话 → 「从未」；没设职责 → 破折号。 */
-function lastCookedText(row: ParentDutyProgress): string {
-  if (row.daysSinceLastCooked === null) return row.duty ? '从未' : '—'
-  if (row.daysSinceLastCooked === 0) return '今天'
-  return `${row.daysSinceLastCooked} 天前`
-}
-
-/**
- * 「上次更新」久了的着色：与「最近出勤」同一套阈值（30 天黄 / 90 天红）。
- *
- * ⚠️ 两列的阈值刻意**不用两套**：同一行里两个天数用不同门槛，读者没法比较，
- * 反而要记两条规则。同门槛还有个好处 —— 两列一起变黄时，"零敲碎打"一眼可见。
- */
-function lastCookedClass(row: ParentDutyProgress): string {
-  const days = row.daysSinceLastCooked
-  if (days === null) return 'text-text-tertiary'
-  if (days >= 90) return 'font-medium text-danger'
-  if (days >= 30) return 'font-medium text-warning'
-  return 'text-text-tertiary'
-}
-
-/** 久未动就该被看见：30 天起黄、90 天起红。 */
-function daysClass(row: ParentDutyProgress): string {
-  const days = row.daysSinceLastMark
-  if (days === null) return 'text-text-tertiary'
-  if (days >= 90) return 'font-medium text-danger'
-  if (days >= 30) return 'font-medium text-warning'
-  return 'text-text-tertiary'
+function clearFilter() {
+  search.value = '';
+  filter.value = 'all';
 }
 </script>
 
 <template>
-  <div class="page-in min-h-full bg-app-bg p-6 text-text-primary">
-    <div class="mb-4 flex items-center justify-between gap-3">
-      <h1 class="text-xl font-semibold tracking-tight text-text-primary">进度</h1>
-      <div class="flex items-center gap-2">
-        <AppSelect
-          :model-value="settings.progressSort"
-          :options="SORT_OPTIONS"
-          test-id="progress-sort"
-          @change="onSortChange"
-        />
-        <button
-          type="button"
-          class="flex h-9 items-center rounded-badge border border-border bg-card-bg px-3 text-sm text-text-secondary transition-colors hover:bg-card-bg-hover hover:text-text-primary"
-          data-testid="progress-timeline-open"
-          @click="drawerOpen = true"
+  <main class="progress-page page-layout" data-testid="progress-page">
+    <header class="view-heading">
+      <div>
+        <h1 class="view-title">进度</h1>
+        <p class="view-description">从这里，继续下一页。</p>
+      </div>
+      <div class="header-actions">
+        <WorkModeSegments v-model="mode" :modes="settings.enabledWorkModes" label="进度职责" />
+        <Button variant="outline" size="sm" @click="drawerOpen = true"
+          ><History class="size-4" />时间线</Button
         >
-          时间线
-        </button>
-        <button
-          type="button"
-          class="flex h-9 items-center rounded-badge bg-accent px-4 text-sm text-text-on-accent transition-colors hover:bg-primary-hover active:bg-primary-active disabled:opacity-40"
+        <Button
+          variant="ghost"
+          size="icon"
           :disabled="refreshing"
-          data-testid="progress-refresh"
-          @click="onRefresh"
-        >
-          {{ refreshing ? '刷新中…' : '刷新' }}
-        </button>
+          aria-label="刷新进度"
+          @click="refresh"
+          ><RefreshCw class="size-4" :class="{ 'animate-spin': refreshing }"
+        /></Button>
       </div>
-    </div>
+    </header>
+    <NetworkRetry v-if="loadError" message="进度加载失败" :error="loadError" @retry="refresh" />
+    <p v-else-if="loading" class="empty">正在读取项目…</p>
+    <template v-else>
+      <section class="summary" aria-label="当前职责汇总">
+        <div>
+          <span>待处理作品</span>
+          <p>
+            <strong>{{ summary.works }}</strong> 部
+          </p>
+        </div>
+        <div>
+          <span>未完成章节</span>
+          <p>
+            <strong>{{ summary.chapters }}</strong> 话
+          </p>
+        </div>
+        <div>
+          <span>剩余页数</span>
+          <p>
+            <strong>{{ summary.remaining }}</strong> 页
+            <small v-if="summary.unknown">另有 {{ summary.unknown }} 话待扫描</small>
+          </p>
+        </div>
+      </section>
+      <section class="works" aria-labelledby="works-title">
+        <div class="section-header">
+          <h2 id="works-title">
+            作品进度 <span>{{ rows.length }} 部</span>
+          </h2>
 
-    <p class="mb-3 text-[11px] leading-5 text-text-tertiary" data-testid="progress-hint">
-      「更新至 / 上次更新 / 最近出勤 / 待烤 / 完成度」都按当前选中的职责算（点职责那枚小胶囊可切换）。
-      「更新至」= 最近完整做完的那一话；「上次更新」= 距那次完整做完多少天；「最近出勤」= 距最近一次动手标记多少天（哪怕只标了一张）。
-    </p>
-
-    <div v-if="busy" class="flex min-h-[40vh] items-center justify-center">
-      <p class="text-text-secondary">正在读取项目与标记记录…</p>
-    </div>
-
-    <!-- ⚠️ 错误必须排在空状态**前面**：读不到 ≠ 没有项目（2026-10-03 审查修复） -->
-    <NetworkRetry
-      v-else-if="loadError"
-      :error="loadError"
-      message="项目树没能读回来"
-      data-testid="progress-error"
-      @retry="onRefresh"
-    />
-
-    <EmptyState v-else-if="isEmpty" data-testid="progress-empty" headline="还没有项目" />
-
-    <div
-      v-else
-      class="overflow-hidden rounded-lg border border-border bg-card-bg shadow-[var(--shadow-1)]"
-      data-testid="progress-table"
-    >
-      <div
-        class="flex items-center gap-2 border-b border-border px-4 py-2 text-[11px] font-medium text-text-tertiary"
-      >
-        <span class="min-w-0 flex-1">漫画</span>
-        <span class="w-16 text-center">职责</span>
-        <span class="w-20 text-right">更新至</span>
-        <span class="w-20 text-right" title="距上次完整做完一话多少天">上次更新</span>
-        <span class="w-20 text-right" title="距最近一次动手标记多少天（哪怕只标了一张）">最近出勤</span>
-        <span class="w-20 text-right">待烤</span>
-        <span class="flex w-40 items-center justify-end">完成度</span>
-      </div>
-
-      <div
-        v-for="row in sortedRows"
-        :key="row.parentId"
-        class="flex items-center gap-2 border-b border-hairline px-4 py-2.5 last:border-b-0 hover:bg-card-bg-hover"
-        data-testid="progress-row"
-      >
-        <button
-          type="button"
-          class="min-w-0 flex-1 truncate text-left text-[13px] font-medium text-text-primary transition-colors hover:text-accent disabled:cursor-default disabled:hover:text-text-primary"
-          :disabled="row.totalChapters === 0"
-          :title="row.totalChapters === 0 ? '这一本还没有登记话' : '打开最近在做的那一话'"
-          :data-testid="`progress-title-${row.parentId}`"
-          @click="openParent(row)"
-        >
-          {{ row.title }}
-        </button>
-
-        <span class="flex w-16 justify-center" data-testid="progress-duties">
-          <button
-            v-if="row.duties.length === 0"
-            type="button"
-            class="rounded-badge px-1.5 py-0.5 text-[10px] leading-none text-text-tertiary transition-colors hover:bg-card-bg-hover hover:text-text-primary"
-            title="这一本还没设职责 —— 点它去「项目」页设置"
-            :data-testid="`progress-set-duties-${row.parentId}`"
-            @click="goSetDuties"
+          <ToggleGroup
+            type="single"
+            :model-value="filter"
+            variant="outline"
+            size="sm"
+            aria-label="进度状态"
+            @update:model-value="
+              (value) => {
+                if (value) filter = String(value);
+              }
+            "
           >
-            未设职责
-          </button>
-          <template v-else>
-            <!-- 与侧栏同一枚原语（styles/index.css 的 .duty-chip）：单职责 15px、双职责 30px；
-                 选中的那一段才实心 —— 两段之间**不画分隔线**，色差本身就是分界
-                 （侧栏那种"两段都未选"的纯标签才需要那道缝）。 -->
-            <span
-              class="duty-chip"
-              :class="row.duties.length > 1 ? 'duty-chip--pair' : 'duty-chip--single'"
-            >
-              <button
-                v-for="duty in row.duties"
-                :key="duty"
-                type="button"
-                class="duty-chip__seg transition-colors"
-                :class="row.duty === duty ? 'duty-chip__seg--on' : 'hover:text-text-primary'"
-                :title="`看「${WORK_MODE_LABELS[duty]}」的进度`"
-                :aria-pressed="row.duty === duty"
-                :data-testid="`progress-duty-${row.parentId}-${duty}`"
-                @click="pickDuty(row.parentId, duty)"
-              >
-                {{ WORK_MODE_SHORT_LABELS[duty] }}
-              </button>
-            </span>
-          </template>
-        </span>
-
-        <span
-          class="w-20 text-right text-[12px] text-text-secondary"
-          data-testid="progress-latest"
-        >
-          {{ row.latestCookedChapter }}
-        </span>
-
-        <!-- 「上次更新」= 距上次**完整做完一话**多少天（2026-10-04 新增）：
-             与右边「最近出勤」配对看 —— 出勤新、更新旧 = 一直在零敲碎打。 -->
-        <span
-          class="w-20 text-right text-[12px]"
-          :class="lastCookedClass(row)"
-          data-testid="progress-last-cooked"
-        >
-          {{ lastCookedText(row) }}
-        </span>
-
-        <span
-          class="w-20 text-right text-[12px]"
-          :class="daysClass(row)"
-          data-testid="progress-days"
-        >
-          {{ daysText(row) }}
-        </span>
-
-        <span class="w-20 text-right" :class="uncookedClass(row)" data-testid="progress-uncooked">
-          {{ uncookedText(row) }}
-        </span>
-
-        <span class="flex w-40 items-center justify-end gap-2">
-          <span class="relative h-1.5 min-w-0 flex-1 overflow-hidden rounded-full bg-media-bg">
-            <span
-              class="absolute inset-y-0 left-0 rounded-full bg-done transition-[width] duration-300"
-              :style="{ width: `${progressPct(row)}%` }"
-              data-testid="progress-bar"
+            <ToggleGroupItem v-for="item in filters" :key="item.value" :value="item.value">{{
+              item.label
+            }}</ToggleGroupItem>
+          </ToggleGroup>
+          <div class="toolbar-right">
+            <AppSelect
+              :model-value="sort"
+              :options="sortOptions"
+              size="small"
+              @update:model-value="sort = String($event)"
             />
-          </span>
-          <span class="w-10 text-right text-[11px] tabular-nums text-text-tertiary">
-            {{ row.cookedChapters }}/{{ row.totalChapters }}
-          </span>
-        </span>
-      </div>
-    </div>
-
+            <div class="search">
+              <Search class="size-4" /><Input
+                v-model="search"
+                aria-label="搜索作品或章节"
+                placeholder="搜索作品或章节"
+              />
+            </div>
+          </div>
+        </div>
+        <div class="column-head row-grid" aria-hidden="true">
+          <span>作品 / 章节</span><span>完成进度</span><span>剩余页数</span><span>最近更新</span
+          ><span>操作</span>
+        </div>
+        <Collapsible
+          v-for="row in rows"
+          :key="row.parent.id"
+          v-model:open="expanded[row.parent.id]"
+          class="work"
+          data-testid="progress-row"
+        >
+          <div class="row-grid work-row">
+            <div class="work-title">
+              <CollapsibleTrigger as-child
+                ><Button
+                  variant="ghost"
+                  size="icon"
+                  :aria-label="`${expanded[row.parent.id] ? '收起' : '展开'}${row.parent.title}`"
+                  ><ChevronDown v-if="expanded[row.parent.id]" class="size-4" /><ChevronRight
+                    v-else
+                    class="size-4" /></Button
+              ></CollapsibleTrigger>
+              <div class="min-w-0">
+                <h3>{{ row.parent.title }}</h3>
+                <div class="work-subtitle">
+                  <span
+                    v-for="duty in dutyMap[row.parent.id]"
+                    :key="duty"
+                    class="duty"
+                    :class="{ selected: duty === mode }"
+                    >{{ WORK_MODE_LABELS[duty] }}</span
+                  ><span>{{ stateLabel(row.state) }}</span>
+                </div>
+              </div>
+            </div>
+            <div class="progress-cell">
+              <div>
+                {{ row.completed }} / {{ row.chapters.length }} 话
+                <small
+                  >{{
+                    row.chapters.length
+                      ? Math.round((row.completed / row.chapters.length) * 100)
+                      : 0
+                  }}%</small
+                >
+              </div>
+              <Progress
+                :model-value="row.chapters.length ? (row.completed / row.chapters.length) * 100 : 0"
+                class="h-1"
+              />
+            </div>
+            <div class="count-cell">
+              <strong>{{ row.unknown && !row.remaining ? '—' : row.remaining }}</strong
+              ><span v-if="row.remaining || !row.unknown"> 页</span
+              ><small v-if="row.unknown">{{ row.unknown }} 话待扫描</small>
+            </div>
+            <time :title="row.at ? new Date(row.at).toLocaleString('zh-CN') : ''">{{
+              recent(row.at)
+            }}</time>
+            <div>
+              <Button
+                :variant="row.complete ? 'outline' : 'default'"
+                size="sm"
+                :disabled="!row.chapters.length"
+                @click="continueWork(row)"
+                >{{ row.complete ? '查看章节' : '继续处理' }}</Button
+              >
+            </div>
+          </div>
+          <CollapsibleContent class="chapters">
+            <div
+              v-for="chapter in row.chapters"
+              :key="chapter.child.id"
+              class="row-grid chapter-row"
+            >
+              <div class="chapter-title">
+                <HomeCover :folder="chapter.child.folderPath" class="chapter-cover" /><span>
+                  {{ formatChapterNumber(chapter.child.chapterNumber)
+                  }}<span v-if="chapter.child.projectTitle">
+                    · {{ chapter.child.projectTitle }}</span
+                  >
+                </span>
+              </div>
+              <div class="progress-cell">
+                <div>
+                  {{ chapter.done }} / {{ chapter.total || '—' }} 页
+                  <small>{{
+                    chapter.total
+                      ? `${Math.round((chapter.done / chapter.total) * 100)}%`
+                      : '待扫描'
+                  }}</small>
+                </div>
+                <Progress
+                  :model-value="chapter.total ? (chapter.done / chapter.total) * 100 : 0"
+                  class="h-1"
+                />
+              </div>
+              <div>{{ chapter.total ? `${chapter.remaining} 页` : '—' }}</div>
+              <time>{{ chapter.at ? recent(chapter.at) : '—' }}</time>
+              <div>
+                <Button variant="ghost" size="sm" @click="openChild(chapter.child)"
+                  >{{ chapter.complete ? '查看' : '继续' }}<ChevronRight class="size-4"
+                /></Button>
+              </div>
+            </div>
+            <p v-if="!row.chapters.length" class="empty">还没有章节，请在项目中添加。</p>
+          </CollapsibleContent>
+        </Collapsible>
+        <div v-if="!rows.length" class="empty">
+          <p>
+            {{ allRows.length ? '没有符合条件的作品' : `暂无${WORK_MODE_LABELS[mode]}职责的作品` }}
+          </p>
+          <Button v-if="allRows.length" variant="ghost" size="sm" @click="clearFilter"
+            >清除筛选</Button
+          ><Button v-else variant="ghost" size="sm" @click="router.push('/project')"
+            >前往项目</Button
+          >
+        </div>
+      </section>
+    </template>
     <ProgressTimelineDrawer
       :open="drawerOpen"
-      :events="timelineEvents"
+      :events="events"
+      :empty-hint="`还没有${WORK_MODE_LABELS[mode]}完成记录。`"
       @close="drawerOpen = false"
     />
-  </div>
+  </main>
 </template>
+
+<style scoped>
+.progress-page {
+  width: 100%;
+
+  color: var(--text-primary);
+}
+.header-actions,
+.section-header,
+.filters,
+.work-title,
+.work-subtitle {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.header-actions {
+  flex-wrap: wrap;
+}
+h2 {
+  font-size: 16px;
+  font-weight: 650;
+}
+h2 span {
+  font-size: 12px;
+  font-weight: 400;
+  margin-left: 10px;
+  color: var(--text-secondary);
+}
+.subtitle {
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin-top: 5px;
+}
+.summary {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--card-bg);
+  margin-bottom: 24px;
+  padding: 22px 26px;
+}
+.summary > div + div {
+  border-left: 1px solid var(--border);
+  padding-left: 28px;
+}
+.summary span {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.summary p {
+  font-size: 12px;
+  margin-top: 7px;
+}
+.summary strong {
+  font-size: 28px;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+  margin-right: 5px;
+}
+.summary small {
+  color: var(--text-secondary);
+  margin-left: 8px;
+}
+.works {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--card-bg);
+  overflow: hidden;
+}
+.section-header {
+  padding: 18px 22px 10px;
+}
+.filters {
+  padding: 8px 22px 18px;
+  justify-content: center;
+  flex-wrap: wrap;
+}
+.search {
+  position: relative;
+  width: 230px;
+}
+.search > svg {
+  position: absolute;
+  left: 10px;
+  top: 10px;
+  color: var(--text-secondary);
+}
+.search input {
+  padding-left: 32px;
+}
+.row-grid {
+  display: grid;
+  grid-template-columns:
+    minmax(220px, 2.4fr) minmax(140px, 1.4fr) minmax(80px, 0.7fr) minmax(90px, 0.8fr)
+    minmax(100px, 0.8fr);
+  gap: 20px;
+  align-items: center;
+  text-align: center;
+  padding: 12px 20px;
+  font-size: 12px;
+}
+.column-head {
+  background: var(--bg-sunken);
+  color: var(--text-secondary);
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+}
+.column-head > span:first-child {
+  text-align: left;
+  padding-left: 36px;
+}
+.work + .work {
+  border-top: 1px solid var(--border);
+}
+.work-title {
+  gap: 6px;
+  text-align: left;
+}
+.work-title > button {
+  flex-shrink: 0;
+  width: 28px;
+  height: 28px;
+}
+.work-title h3 {
+  font-size: 14px;
+  font-weight: 650;
+  overflow-wrap: anywhere;
+}
+.work-subtitle {
+  font-size: 11px;
+  gap: 4px;
+  flex-wrap: wrap;
+  color: var(--text-secondary);
+  margin-top: 5px;
+}
+.duty {
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 0 4px;
+}
+.duty.selected {
+  color: var(--primary);
+  border-color: var(--primary-border);
+  background: var(--primary-soft);
+}
+.progress-cell {
+  width: 100%;
+  max-width: 300px;
+  justify-self: center;
+  font-variant-numeric: tabular-nums;
+}
+.progress-cell > div:first-child {
+  position: relative;
+  margin-bottom: 8px;
+  padding: 0 30px;
+}
+.progress-cell small {
+  position: absolute;
+  right: 0;
+  top: 1px;
+  font-size: 10px;
+  color: var(--text-secondary);
+}
+time {
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+.count-cell small {
+  display: block;
+  color: var(--text-secondary);
+  font-size: 10px;
+  margin-top: 4px;
+}
+.chapters {
+  background: var(--bg-sunken);
+  border-top: 1px solid var(--border);
+  padding: 0 20px;
+}
+.chapter-row {
+  padding: 12px 0;
+}
+.chapter-row + .chapter-row {
+  border-top: 1px solid var(--border);
+}
+.chapter-title {
+  text-align: left;
+  padding-left: 36px;
+  overflow-wrap: anywhere;
+}
+.empty {
+  padding: 40px 20px;
+  text-align: center;
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+@media (max-width: 1000px) {
+  .row-grid {
+    gap: 12px;
+    grid-template-columns: minmax(170px, 2fr) minmax(125px, 1.3fr) 65px 76px 85px;
+  }
+  .summary {
+    padding: 18px;
+  }
+  .summary > div + div {
+    padding-left: 16px;
+  }
+  .summary small {
+    display: block;
+    margin-left: 0;
+  }
+  .filters {
+    gap: 8px;
+  }
+  .search {
+    width: 190px;
+  }
+}
+@media (max-width: 740px) {
+  .column-head {
+    display: none;
+  }
+  .row-grid {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: 14px;
+  }
+  .work-title,
+  .chapter-title {
+    grid-column: 1/-1;
+  }
+  .row-grid > div:last-child {
+    grid-column: 2;
+    grid-row: 3;
+  }
+  .row-grid > time {
+    grid-column: 1;
+    grid-row: 3;
+  }
+  .work-title {
+    padding: 0;
+  }
+  .chapter-title {
+    padding-left: 10px;
+  }
+  .summary {
+    gap: 10px;
+    padding: 14px;
+  }
+  .summary > div + div {
+    padding-left: 10px;
+  }
+  .summary strong {
+    font-size: 23px;
+  }
+  .header-actions {
+    gap: 8px;
+  }
+  .filters {
+    padding: 10px;
+  }
+  .search {
+    flex: 1;
+    min-width: 160px;
+  }
+  .progress-cell > div:first-child {
+    padding: 0 20px;
+  }
+  .count-cell {
+    justify-self: center;
+  }
+}
+.section-header {
+  padding: 18px 22px;
+  gap: 16px;
+  flex-wrap: nowrap;
+}
+.section-header h2 {
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.toolbar-right {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-left: auto;
+}
+.column-head {
+  background: var(--card-bg);
+  font-size: 14px;
+  font-weight: 600;
+}
+.progress-cell > div:first-child {
+  text-align: left;
+  padding-left: 0;
+}
+.chapter-title {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.chapter-cover {
+  width: 32px;
+  height: 44px;
+  border-radius: 4px;
+}
+.section-header :deep([role='group']) {
+  flex-shrink: 0;
+}
+.toolbar-right .search {
+  width: 190px;
+}
+@media (max-width: 1100px) {
+  .section-header {
+    gap: 8px;
+    padding: 14px 12px;
+  }
+  .toolbar-right {
+    gap: 6px;
+  }
+  .toolbar-right .search {
+    width: 145px;
+  }
+  .section-header h2 {
+    font-size: 14px;
+  }
+  .section-header h2 span {
+    margin-left: 4px;
+  }
+  .section-header :deep(button) {
+    padding-left: 7px;
+    padding-right: 7px;
+  }
+}
+@media (max-width: 850px) {
+  .section-header {
+    overflow-x: auto;
+  }
+  .toolbar-right .search {
+    width: 130px;
+  }
+}
+</style>

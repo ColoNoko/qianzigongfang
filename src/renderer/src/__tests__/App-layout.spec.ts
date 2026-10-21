@@ -91,7 +91,10 @@ describe('App 外壳布局契约', () => {
     const main = mounted.get('[data-testid="app-main"]')
     // overflow-auto 的 flex 项必须允许收缩（min-h-0），否则会被内容撑高、把外壳和文档一起顶大。
     expect(main.classes()).toContain('min-h-0')
-    expect(main.classes()).toContain('overflow-auto')
+    expect(main.classes()).toContain('overflow-hidden')
+    const scroll = main.get('.app-scroll')
+    expect(scroll.classes()).toContain('min-h-0')
+    expect(scroll.classes()).toContain('overflow-auto')
   })
 
   /**
