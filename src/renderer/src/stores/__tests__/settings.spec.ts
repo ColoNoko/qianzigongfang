@@ -493,18 +493,52 @@ describe('settings · 对照视图译文态分栏宽度', () => {
   })
 })
 
-it('migrates import duty defaults without re-enabling disabled work modes', async () => {
+it('migrates legacy mode limits into durable import duties while enabling all work views', async () => {
   setActivePinia(createPinia())
-  mockComicType(vi.fn(async key => key === 'ui.workModes' ? {enabled:['proofread'],active:'proofread'} : undefined))
+  const values = new Map<string, unknown>([['ui.workModes', { enabled: ['proofread'], active: 'proofread' }]])
+  mockComicType(vi.fn(async key => values.get(key)))
+  vi.mocked(window.comicType.storeSet).mockImplementation(async (key, value) => { values.set(key, structuredClone(value)) })
   const store = useSettingsStore()
   await store.loadSettings()
   expect(store.defaultImportDuties).toEqual(['proofread'])
-  expect(store.enabledWorkModes).toEqual(['proofread'])
+  expect(store.enabledWorkModes).toEqual(['typeset', 'translated', 'proofread', 'supervised'])
+  expect(values.get('ui.importDuties')).toEqual({ duties: ['proofread'], priority: 'slower' })
+  await store.setActiveWorkMode('translated')
+  setActivePinia(createPinia())
+  const restored = useSettingsStore()
+  await restored.loadSettings()
+  expect(restored.defaultImportDuties).toEqual(['proofread'])
+  expect(restored.activeWorkMode).toBe('translated')
   await store.saveImportDuties(['translated','supervised'],'faster')
-  expect(store.activeWorkMode).toBe('proofread')
+  expect(store.activeWorkMode).toBe('translated')
   expect(window.comicType.storeSet).toHaveBeenCalledWith('ui.importDuties',{duties:['translated','supervised'],priority:'faster'})
 })
 
+it.each([{ duties: [] }, { duties: ['translated', 'supervised'] }])('preserves explicit import duties $duties over legacy limits', async ({ duties }) => {
+  mockComicType(vi.fn(async key => key === 'ui.workModes'
+    ? { enabled: ['proofread'], active: 'proofread' }
+    : key === 'ui.importDuties' ? { duties, priority: 'faster' } : undefined))
+  const store = useSettingsStore()
+  await store.loadSettings()
+  expect(store.defaultImportDuties).toEqual(duties)
+  expect(store.dutyModePriority).toBe('faster')
+  expect(store.enabledWorkModes).toHaveLength(4)
+  expect(window.comicType.storeSet).not.toHaveBeenCalled()
+})
+
+it('keeps the rest of loaded settings when legacy duty migration cannot be saved', async () => {
+  mockComicType(vi.fn(async key => key === 'ui.workModes'
+    ? { enabled: ['proofread'], active: 'proofread' }
+    : key === 'ui.thumbSize' ? '小' : undefined))
+  vi.mocked(window.comicType.storeSet).mockRejectedValue(new Error('disk full'))
+  const store = useSettingsStore()
+  await store.loadSettings()
+  expect(store.thumbSize).toBe('小')
+  expect(store.defaultImportDuties).toEqual(['proofread'])
+  expect(store.activeWorkMode).toBe('proofread')
+  expect(store.enabledWorkModes).toHaveLength(4)
+  expect(store.settingsLoaded).toBe(true)
+})
 
 describe('homepage preference', () => {
   it('persists modern and restores it on the next load, keeping unknown values on default', async () => {
@@ -563,20 +597,20 @@ describe('per-comic work mode', () => {
     expect(restored.modeForProject(b)).toBe('typeset')
   })
 
-  it('ignores historical choices for empty duties and invalid or disabled roles', async () => {
+  it('ignores historical choices for empty duties and invalid or removed roles', async () => {
     const values = persistentSettings()
     values.set('ui.workModes', { enabled: ['translated', 'proofread'], active: 'translated' })
-    values.set('ui.projectWorkModes', { cleared: 'proofread', disabled: 'supervised', changed: 'typeset', junk: 'invalid' })
+    values.set('ui.importDuties', { duties: ['translated', 'proofread'], priority: 'slower' })
+    values.set('ui.projectWorkModes', { cleared: 'proofread', removed: 'supervised', changed: 'typeset', junk: 'invalid' })
     const store = useSettingsStore()
     await store.loadSettings()
-    expect(store.enabledWorkModes).toEqual(['translated', 'proofread'])
+    expect(store.enabledWorkModes).toHaveLength(4)
     expect(store.projectWorkModes.junk).toBeUndefined()
     expect(store.modeForProject(parent('cleared', []))).toBe('translated')
-    expect(store.modeForProject(parent('disabled', ['supervised', 'proofread']))).toBe('proofread')
+    expect(store.modeForProject(parent('removed', ['proofread']))).toBe('proofread')
     expect(store.modeForProject(parent('changed', ['proofread']))).toBe('proofread')
-    await store.setProjectWorkMode('disabled', 'supervised')
     expect(window.comicType.storeSet).not.toHaveBeenCalled()
-    expect(store.projectWorkModes.disabled).toBe('supervised')
+    expect(store.projectWorkModes.removed).toBe('supervised')
   })
 
   it('serializes simultaneous writes without losing another work or the newest choice', async () => {

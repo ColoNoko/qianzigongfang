@@ -18,6 +18,26 @@ it('rejects injected lines and malformed headers', () => {
   expect(() => rewriteTranslationCredits('no header', { translator: '', proofreader: '', combined: false })).toThrow()
 })
 
+for (const newline of ['\n', '\r\n', '\r']) {
+  it(`preserves the entire dialogue after an indented first image header with ${JSON.stringify(newline)} endings`, () => {
+    const body = [
+      '  >>>>>>>>[001.jpg]<<<<<<<<  ',
+      '----------------[1]----------------[0.5,0.5,1]',
+      '翻译：这是一句台词', '校对：这也是台词', '',
+      '>>>>>>>>[002.jpg]<<<<<<<<',
+      '----------------[1]----------------[0.5,0.5,1]', '第二页台词', ''
+    ].join(newline)
+    const header = ['\uFEFF1,0', ' - ', '框内', '框外', '\t-\t', '翻译：原译者', '保留备注', ''].join(newline)
+    const credits = { translator: '新译者', proofreader: '校对者', combined: false }
+    expect(readTranslationCredits(header + body).translator).toBe('原译者')
+    const saved = rewriteTranslationCredits(header + body, credits)
+    expect(saved.endsWith(body)).toBe(true)
+    expect(saved.startsWith(`\uFEFF1,0${newline}`)).toBe(true)
+    expect(saved).toContain(`保留备注${newline}`)
+    expect(readTranslationCredits(saved)).toEqual(credits)
+  })
+}
+
 it('fills only first-edit blanks, respects existing names and preserves explicitly cleared credits', () => {
   const current = { translator:'原译者', proofreader:'', combined:false }
   const previous = { source:'秦爷', translator:'旧译者', proofreader:'旧校对', typesetter:'旧嵌字' }

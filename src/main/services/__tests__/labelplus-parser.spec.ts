@@ -1,8 +1,25 @@
 // @vitest-environment node
 import { describe, expect, it } from 'vitest'
 import { parseLabelPlusContent } from '../labelplus-parser'
+import { rewriteTranslationCredits } from '@shared/translation-credits'
 
 describe('LabelPlus parser', () => {
+  it('keeps images and dialogue unchanged when rewriting credits before an indented image header', () => {
+    const text = [
+      '1,0', '-', '框内', '框外', '-', '翻译：原译者',
+      '  >>>>>>>>[001.jpg]<<<<<<<<', '------[1]------[0.5,0.5,1]',
+      '翻译：这是一句台词', '>>>>>>>>[002.jpg]<<<<<<<<',
+      '------[1]------[0.5,0.5,1]', '第二页台词', ''
+    ].join('\n')
+    const before = parseLabelPlusContent(text)
+    const after = parseLabelPlusContent(rewriteTranslationCredits(text, {
+      translator: '新译者', proofreader: '校对者', combined: false
+    }))
+    expect(before.credits?.translator).toBe('原译者')
+    expect(after.images).toEqual(before.images)
+    expect(after.credits).toEqual({ translator: '新译者', proofreader: '校对者', combined: false })
+  })
+
   it('parses the official TXT format and preserves frame groups', () => {
     const document = parseLabelPlusContent(
       [

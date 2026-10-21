@@ -25,24 +25,23 @@ it('单模式隐藏切换，多模式只提供启用项并发出选择', async (
   expect(wrapper.emitted('update:modelValue')).toEqual([['proofread']])
 })
 
-it('启用范围和当前模式一起持久化，重载恢复，禁用项和空选择不能生效', async () => {
-  const settings = useSettingsStore()
-  await settings.saveWorkModes(['translated', 'proofread'])
-  await settings.setActiveWorkMode('proofread')
-  const saved = vi.mocked(window.comicType.storeSet).mock.calls.at(-1)![1]
+it('旧启用范围不再限制模式，默认模式保存后可重载且空选择不生效', async () => {
+  const values = new Map<string, unknown>([[WORK_MODES_STORAGE_KEY, { enabled: ['translated', 'proofread'], active: 'proofread' }]])
   window.comicType.storeGet = vi.fn(async (key) =>
-    key === WORK_MODES_STORAGE_KEY ? saved : undefined
+    values.get(key)
   )
+  vi.mocked(window.comicType.storeSet).mockImplementation(async (key, value) => { values.set(key, structuredClone(value)) })
+  const settings = useSettingsStore()
+  await settings.loadSettings()
+  expect(settings.enabledWorkModes).toEqual(['typeset', 'translated', 'proofread', 'supervised'])
+  expect(settings.activeWorkMode).toBe('proofread')
+  await settings.setActiveWorkMode('supervised')
+  await settings.saveWorkModes([])
   setActivePinia(createPinia())
   const restored = useSettingsStore()
   await restored.loadSettings()
-  expect(restored.enabledWorkModes).toEqual(['translated', 'proofread'])
-  expect(restored.activeWorkMode).toBe('proofread')
-  await restored.setActiveWorkMode('supervised')
-  await restored.saveWorkModes([])
-  expect(restored.activeWorkMode).toBe('proofread')
-  await restored.saveWorkModes(['translated'])
-  expect(restored.activeWorkMode).toBe('translated')
+  expect(restored.activeWorkMode).toBe('supervised')
+  expect(restored.enabledWorkModes).toHaveLength(4)
 })
 
 it('写入失败保留原设置', async () => {

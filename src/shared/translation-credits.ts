@@ -1,3 +1,5 @@
+import { matchLabelPlusFileHeader } from './labelplus-format'
+
 export interface TranslationCredits {
   translator: string
   proofreader: string
@@ -11,20 +13,25 @@ export interface TranslationCredits {
 // LabelPlus permits comments after the second header separator. Never inspect
 // image bodies: translated dialogue can contain the same words as these fields.
 function headerRange(text: string): { start: number; end: number } | null {
-  const image = /^>{6,}\[/m.exec(text)
-  if (!image) return null
-  const separators = [...text.slice(0, image.index).matchAll(/^-[ \t]*\r?$/gm)]
-  if (separators.length < 2) return null
-  const separator = separators[1]
-  const start = separator.index! + separator[0].length
-  return { start, end: image.index }
+  let separators = 0
+  let start: number | null = null
+  // Keep raw offsets so BOM, line endings, indentation and dialogue stay intact.
+  for (const line of text.matchAll(/([^\r\n]*)(?:\r\n|\r|\n|$)/g)) {
+    if (matchLabelPlusFileHeader(line[1]) !== null) {
+      return start === null ? null : { start, end: line.index! }
+    }
+    if (line[1].trim() === '-' && ++separators === 2) {
+      start = line.index! + line[1].length
+    }
+  }
+  return null
 }
 const field = /^(图源|翻译|校对|嵌字|监修|翻校一体|署名已编辑|翻译\s*[/／?？、&＆+＋与和]\s*校对)[：:][ \t]*(.*)$/
 export function readTranslationCredits(text: string): TranslationCredits {
   const result: TranslationCredits = { translator: '', proofreader: '', combined: false }
   const range = headerRange(text)
   if (!range) return result
-  for (const line of text.slice(range.start, range.end).split(/\r?\n/)) {
+  for (const line of text.slice(range.start, range.end).split(/\r\n|\r|\n/)) {
     const match = field.exec(line)
     if (match && /^翻译\s*[/／?？、&＆+＋与和]\s*校对$/.test(match[1])) {
       result.translator = match[2].trim()
@@ -48,8 +55,8 @@ export function rewriteTranslationCredits(text: string, credits: TranslationCred
       [credits.translator, credits.proofreader, credits.source ?? '', credits.typesetter ?? '', credits.supervisor ?? ''].some(name => typeof name !== 'string' || name.length > 120 || /[\r\n\x00-\x1f]/.test(name))) {
     throw new Error('署名须为单行文本，最多 120 字')
   }
-  const newline = text.includes('\r\n') ? '\r\n' : '\n'
-  const comments = text.slice(range.start, range.end).split(/\r?\n/).filter(line => !field.test(line))
+  const newline = text.match(/\r\n|\r|\n/)?.[0] ?? '\n'
+  const comments = text.slice(range.start, range.end).split(/\r\n|\r|\n/).filter(line => !field.test(line))
   while (comments.length && !comments[0]) comments.shift()
   while (comments.length && !comments[comments.length - 1]) comments.pop()
   const previous = readTranslationCredits(text)

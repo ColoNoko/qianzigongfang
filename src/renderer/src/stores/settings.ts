@@ -522,11 +522,24 @@ export const useSettingsStore = defineStore('settings', {
         this.invertWheel = rawInvertWheel === true
         this.thumbSize = isValidSize(rawThumbSize) ? rawThumbSize : DEFAULT_SIZE
         const workModes = rawWorkModes as { enabled?: unknown; active?: WorkMode } | null
-        this.enabledWorkModes = normalizeEnabledModes(workModes?.enabled)
+        // Legacy enabled modes now describe import defaults, not access to work views.
+        this.enabledWorkModes = [...WORK_MODES]
         this.projectWorkModes = normalizeProjectWorkModes(rawProjectWorkModes)
         const dutyDefaults = await window.comicType.storeGet('ui.importDuties') as { duties?: WorkMode[]; priority?: string } | null
-        this.defaultImportDuties = normalizeDuties(dutyDefaults?.duties ?? (workModes?.enabled ?? ['typeset']))
+        const storedDuties = dutyDefaults?.duties
+        const hasImportDuties = Array.isArray(storedDuties) && storedDuties.every(mode => WORK_MODES.includes(mode))
+        this.defaultImportDuties = normalizeDuties(hasImportDuties ? storedDuties : (workModes?.enabled ?? ['typeset']))
         this.dutyModePriority = dutyDefaults?.priority === 'faster' ? 'faster' : 'slower'
+        if (!hasImportDuties && Array.isArray(workModes?.enabled)) {
+          // Persist before a later default-mode save replaces the legacy enabled list.
+          try {
+            await window.comicType.storeSet('ui.importDuties', {
+              duties: [...this.defaultImportDuties], priority: this.dutyModePriority
+            })
+          } catch {
+            useToastStore().addToast({ type: 'error', message: '默认职责迁移保存失败，请在设置中重新保存' })
+          }
+        }
         this.activeWorkMode = workModes?.active && this.enabledWorkModes.includes(workModes.active)
           ? workModes.active : this.enabledWorkModes[0]
         this.autoIncrementalScan = rawAutoIncrementalScan === true

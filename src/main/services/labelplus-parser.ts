@@ -1,5 +1,9 @@
 import { readTranslationCredits } from '../../shared/translation-credits'
-import { readFile, stat } from 'node:fs/promises'
+import { matchLabelPlusFileHeader } from '../../shared/labelplus-format'
+export { matchLabelPlusFileHeader } from '../../shared/labelplus-format'
+import type { ChapterTranslationFingerprint } from '@shared/chapter-translation'
+import { readChapterTranslationSnapshot } from './chapter-translation-snapshot'
+import { stat } from 'node:fs/promises'
 import { extname } from 'node:path'
 import type {
   LabelPlusDocument,
@@ -11,21 +15,7 @@ import type {
 const MAX_LABELPLUS_FILE_BYTES = 64 * 1024 * 1024
 const MAX_IMAGE_COUNT = 20_000
 const MAX_LABEL_COUNT = 250_000
-// Official PS-Script output uses eight `>`/`<` characters, while older
-// LabelPlus exporters used six. Accept any run of six or more delimiters.
-const FILE_HEADER = /^\s*>{6,}\[(.*)\]<{6,}\s*$/
 const LABEL_HEADER = /^\s*-{6,}\[(.*?)\]-{6,}\[([^\]]+)\]\s*$/
-
-/**
- * 认"图片标题行"，取出图名（已去首尾空白）；认不出返回 `null`。
- *
- * ⚠️ **写回服务靠这两个 helper 定位"要改哪一行"，别在别处再抄一份正则**
- * （§13 第 21 条：同一条规则只允许一处实现）。
- */
-export function matchLabelPlusFileHeader(line: string): string | null {
-  const match = FILE_HEADER.exec(line)
-  return match ? (match[1] ?? '').trim() : null
-}
 
 /** 认"标签头"，取出序号与坐标串。序号认不出时为 `0`（调用方回退成"第几条"）。 */
 export function matchLabelPlusLabelHeader(line: string): { index: number; values: string } | null {
@@ -219,7 +209,7 @@ function parseTextDocumentWithSpans(content: string, sourcePath: string): LabelP
     .replace(/^\uFEFF/, '')
     .replace(/\r\n?/g, '\n')
     .split('\n')
-  const firstFileLine = lines.findIndex((line) => FILE_HEADER.test(line))
+  const firstFileLine = lines.findIndex((line) => matchLabelPlusFileHeader(line) !== null)
   if (firstFileLine < 0) throw new LabelPlusParseError('没有找到图片标题行')
 
   const headerLines = lines.slice(0, firstFileLine)
@@ -373,12 +363,27 @@ export function parseLabelPlusContent(content: string, sourcePath = ''): LabelPl
     : parseTextDocument(normalized, sourcePath)
 }
 
-export async function readLabelPlusFile(filePath: string): Promise<LabelPlusDocument> {
+/** Parse and fingerprint the same bytes so a later external save is detected. */
+export async function readLabelPlusFileSnapshot(filePath: string): Promise<{
+  document: LabelPlusDocument
+  fingerprint: ChapterTranslationFingerprint
+}> {
   const fileStat = await stat(filePath)
   if (!fileStat.isFile()) throw new LabelPlusParseError('所选路径不是文件')
   if (fileStat.size > MAX_LABELPLUS_FILE_BYTES) {
     throw new LabelPlusParseError(`文件超过 ${MAX_LABELPLUS_FILE_BYTES / 1024 / 1024} MB 限制`)
   }
-  const content = await readFile(filePath, 'utf8')
-  return parseLabelPlusContent(content, filePath)
+  const { bytes, fingerprint } = await readChapterTranslationSnapshot(filePath, fileStat)
+  // The file may have grown after stat; retain the size guard for this snapshot too.
+  if (bytes.length > MAX_LABELPLUS_FILE_BYTES) {
+    throw new LabelPlusParseError(`文件超过 ${MAX_LABELPLUS_FILE_BYTES / 1024 / 1024} MB 限制`)
+  }
+  return {
+    document: parseLabelPlusContent(bytes.toString('utf8'), filePath),
+    fingerprint
+  }
+}
+
+export async function readLabelPlusFile(filePath: string): Promise<LabelPlusDocument> {
+  return (await readLabelPlusFileSnapshot(filePath)).document
 }

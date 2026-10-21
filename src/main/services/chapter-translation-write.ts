@@ -37,7 +37,7 @@ import { rewriteTranslationCredits } from '../../shared/translation-credits'
 import { existsSync } from 'node:fs'
 import { copyFile, mkdir, readFile, readdir, stat, unlink } from 'node:fs/promises'
 import { basename, join } from 'node:path'
-import { createHash } from 'node:crypto'
+import { readChapterTranslationSnapshot } from './chapter-translation-snapshot'
 import {
   buildEmptyChapterTranslationText,
   buildChapterTranslationWithEntry,
@@ -156,13 +156,7 @@ function describeError(error: unknown): string {
 export async function fingerprintChapterTranslationFile(
   filePath: string
 ): Promise<ChapterTranslationFingerprint> {
-  const info = await stat(filePath)
-  const bytes = await readFile(filePath)
-  return {
-    size: info.size,
-    mtimeMs: info.mtimeMs,
-    sha256: createHash('sha256').update(bytes).digest('hex')
-  }
+  return (await readChapterTranslationSnapshot(filePath)).fingerprint
 }
 
 /** 备份文件名里的话名：去掉扩展名、剔掉 Windows 不许的字符；空了就用 `translation`。 */
@@ -233,9 +227,8 @@ async function readCurrentChapterTranslation(
   | { ok: false; kind: 'io'; message: string }
 > {
   try {
-    const fingerprint = await fingerprintChapterTranslationFile(filePath)
-    const text = await readFile(filePath, 'utf8')
-    return { ok: true, fingerprint, text }
+    const { fingerprint, bytes } = await readChapterTranslationSnapshot(filePath)
+    return { ok: true, fingerprint, text: bytes.toString('utf8') }
   } catch (error) {
     return { ok: false, kind: 'io', message: `读不了这个 txt：${describeError(error)}` }
   }
@@ -304,8 +297,9 @@ async function writeChapterTranslationText(
   let after: ChapterTranslationFingerprint
   let afterText: string
   try {
-    after = await fingerprintChapterTranslationFile(filePath)
-    afterText = await readFile(filePath, 'utf8')
+    const snapshot = await readChapterTranslationSnapshot(filePath)
+    after = snapshot.fingerprint
+    afterText = snapshot.bytes.toString('utf8')
   } catch (error) {
     return {
       ok: false,
@@ -528,8 +522,9 @@ export async function createChapterTranslation(
   let after: ChapterTranslationFingerprint
   let afterText: string
   try {
-    after = await fingerprintChapterTranslationFile(target)
-    afterText = await readFile(target, 'utf8')
+    const snapshot = await readChapterTranslationSnapshot(target)
+    after = snapshot.fingerprint
+    afterText = snapshot.bytes.toString('utf8')
   } catch (error) {
     return { ok: false, kind: 'io', message: `新建后读不回来：${describeError(error)}` }
   }
@@ -654,8 +649,9 @@ export async function undoChapterTranslation(
   let current: ChapterTranslationFingerprint
   let currentText: string
   try {
-    current = await fingerprintChapterTranslationFile(filePath)
-    currentText = await readFile(filePath, 'utf8')
+    const snapshot = await readChapterTranslationSnapshot(filePath)
+    current = snapshot.fingerprint
+    currentText = snapshot.bytes.toString('utf8')
   } catch (error) {
     return { ok: false, kind: 'io', message: `读不了这个 txt：${describeError(error)}` }
   }
@@ -726,8 +722,9 @@ export async function undoChapterTranslation(
   let after: ChapterTranslationFingerprint
   let afterText: string
   try {
-    after = await fingerprintChapterTranslationFile(filePath)
-    afterText = await readFile(filePath, 'utf8')
+    const snapshot = await readChapterTranslationSnapshot(filePath)
+    after = snapshot.fingerprint
+    afterText = snapshot.bytes.toString('utf8')
   } catch (error) {
     return {
       ok: false,

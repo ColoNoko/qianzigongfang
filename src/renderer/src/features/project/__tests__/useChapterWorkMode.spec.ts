@@ -42,6 +42,22 @@ beforeEach(() => {
 afterEach(() => { scopes.splice(0).forEach(scope => scope.stop()) })
 
 describe('chapter entry and current mode', () => {
+  it('enters assigned duties and permits manual modes outside a legacy enabled list', async () => {
+    const settings = useSettingsStore()
+    vi.mocked(window.comicType.storeGet).mockImplementation(async key => key === 'ui.workModes'
+      ? { enabled: ['proofread'], active: 'proofread' } : undefined)
+    await settings.loadSettings()
+    const view = open(book('a', ['translated']))
+    expect(view.currentMode.value).toBe('translated')
+    view.setCurrentMode('supervised')
+    expect(view.currentMode.value).toBe('supervised')
+    view.index.value = 1
+    expect(view.currentMode.value).toBe('translated')
+    await flushPromises()
+    expect(settings.projectWorkModes.a).toBe('translated')
+    expect(settings.activeWorkMode).toBe('proofread')
+  })
+
   it('enters the only duty and keeps it when the global default changes', async () => {
     const settings = useSettingsStore()
     const view = open(book('a', ['proofread']))

@@ -23,8 +23,7 @@ import {
   type ChapterTranslationCandidate,
   type ChapterTranslationReadResult
 } from '@shared/chapter-translation'
-import { readLabelPlusFile } from './labelplus-parser'
-import { fingerprintChapterTranslationFile } from './chapter-translation-write'
+import { readLabelPlusFileSnapshot } from './labelplus-parser'
 
 const TXT_EXT = '.txt'
 
@@ -101,12 +100,7 @@ export async function readChapterTranslation(
   let firstFailure = ''
   for (const candidate of ranked) {
     try {
-      const document = await readLabelPlusFile(candidate.path)
-      // 基指纹与文档**一起**给出去：界面保存时要把它原样回传，
-      // 写之前再算一遍比对（见 shared 里 ChapterTranslationFingerprint 的说明）。
-      // 指纹与 document 是两次读，理论上能跨过一次外部写入 ⇒ 那会让保存时"多报一次冲突"，
-      // 宁可多报（拒绝写入）也不漏报（覆盖别人的改动）。
-      const fingerprint = await fingerprintChapterTranslationFile(candidate.path)
+      const { document, fingerprint } = await readLabelPlusFileSnapshot(candidate.path)
       return {
         status: 'ok',
         file: {
